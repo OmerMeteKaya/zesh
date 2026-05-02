@@ -2,8 +2,9 @@
 // Created by mete on 23.04.2026.
 //
 
-#include <time.h>
 extern int last_exit_status;
+
+#include <time.h>
 #include <sys/stat.h>
 #include <stdio.h>
 #include <stdlib.h>
@@ -16,6 +17,7 @@ extern int last_exit_status;
 #include "../include/rc.h"
 #include "../include/plugin.h"
 #include "../include/config.h"
+#include "../include/security.h"
 
 void signals_init(void);
 void jobs_init(void);
@@ -227,10 +229,41 @@ int main() {
 
         // Execution
         if (!is_assignment) {
-            CmdList *list = parse_list(tokens, ntokens);
-            if (list) {
-                execute_list(list);
-                cmdlist_free(list);
+
+            const char *sec_reason = NULL;
+            SecurityLevel sec_level = security_check(input, &sec_reason);
+
+            int should_run = 1;
+
+            if (sec_level == SEC_BLOCK) {
+                fprintf(stderr,
+                    "\033[1;31m⛔ Blocked:\033[0m %s\n", sec_reason);
+                should_run = 0;
+            } else if (sec_level == SEC_WARN) {
+                fprintf(stderr,
+                    "\033[1;33m⚠  Unsafe Command:\033[0m %s\n", sec_reason);
+                fprintf(stderr,
+                    "\033[1;33m   Do you want to continue?[y/N]\033[0m ");
+                fflush(stderr);
+
+                
+                char answer[4] = {0};
+                if (fgets(answer, sizeof(answer), stdin)) {
+                    should_run = (answer[0] == 'y' || answer[0] == 'Y');
+                } else {
+                    should_run = 0;
+                }
+            }
+
+            /* audit log */
+            security_audit(input);
+
+            if (should_run) {
+                CmdList *list = parse_list(tokens, ntokens);
+                if (list) {
+                    execute_list(list);
+                    cmdlist_free(list);
+                }
             }
         }
         // Cleanup

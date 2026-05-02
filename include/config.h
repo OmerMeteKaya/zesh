@@ -11,6 +11,12 @@ typedef struct {
     /* History */
     int   history_max;
     int   history_dedup;
+    
+    /* Security */
+    int   security_warn;
+    int   security_block;
+    int   security_audit;
+    char  security_audit_log[256];
 
     /* Panel */
     int   panel_max_rows;

@@ -21,6 +21,10 @@ ShellConfig g_config = {
     .completion_enabled  = 1,
     .suggestion_enabled  = 1,
     .highlight_enabled   = 1,
+    .security_warn      = 1,
+    .security_block     = 0,
+    .security_audit     = 1,
+    .security_audit_log = "~/.mysh/audit.log",
 };
 
 /* Helper: parse_bool */
