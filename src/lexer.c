@@ -42,6 +42,7 @@ static Token *add_token(Token **tokens, int *count, int *capacity, TokenType typ
     }
     (*tokens)[*count].type = type;
     (*tokens)[*count].value = value;
+    (*tokens)[*count].quoted = 0;
     (*count)++;
     return *tokens;
 }
@@ -116,6 +117,7 @@ Token *lex(const char *input, int *ntokens) {
                 value[len + 1] = '\'';
                 value[len + 2] = '\0';
                 if (!add_token(&tokens, &count, &capacity, TOK_WORD, value)) return NULL;
+                tokens[count-1].quoted = 1;
                 p++;
             } else {
                 tokens_free(tokens, count);
@@ -149,6 +151,7 @@ Token *lex(const char *input, int *ntokens) {
                     return NULL;
                 }
                 if (!add_token(&tokens, &count, &capacity, TOK_WORD, value)) return NULL;
+                tokens[count-1].quoted = 1;
                 p++;
             } else {
                 free(buffer);
@@ -160,45 +163,85 @@ Token *lex(const char *input, int *ntokens) {
 
         // Words
         const char *start = p;
+        /* handle $(...) as single unit — existing logic */
         while (*p) {
-            /* stop at whitespace and operators */
             if (isspace(*p)) break;
             if (*p == '|' || *p == '<' || *p == '>' ||
-                *p == '\'' || *p == '"') break;
-            /* stop at & only if not preceded by $ */
-            if (*p == '&') break;
-
-            /* $(...) — consume entire substitution as one unit */
+                *p == '&' || *p == ';') break;
+            if (*p == '\'' || *p == '"') break;
             if (*p == '$' && *(p+1) == '(') {
-                p += 2;  /* skip $( */
+                p += 2;
                 int depth = 1;
                 while (*p && depth > 0) {
                     if (*p == '(') depth++;
                     else if (*p == ')') depth--;
                     p++;
                 }
-                /* p now points after closing ) */
                 continue;
             }
-
-            /* skip ( and ) only when NOT part of $() */
-            /* bare ( or ) outside $() should stop the word */
             if (*p == '(' || *p == ')') break;
-
             p++;
         }
+        if (p == start) { p++; continue; }
 
-        if (p == start) {
-            p++;
+        /* check if word ends with '=' and next char is quote */
+        /* e.g. var="hello world" or var='hello world' */
+        if (p > start && *(p-1) != '=' && *p != '\'' && *p != '"') {
+            /* normal word — no quoted suffix */
+            char *value = strdup_range(start, p);
+            if (!value) { tokens_free(tokens, count); return NULL; }
+            if (!add_token(&tokens, &count, &capacity, TOK_WORD, value))
+                return NULL;
             continue;
         }
 
-        char *value = strdup_range(start, p);
-        if (!value) {
-            tokens_free(tokens, count);
-            return NULL;
+        /* word ends with = and next is quote, OR word itself is empty
+           and we hit a quote — handle quoted suffix */
+        if (*p == '\'' || *p == '"') {
+            /* read quoted part into a buffer */
+            char quote = *p++;
+            /* build combined: word_so_far + quoted_content */
+            size_t prefix_len = p - start - 1; /* exclude opening quote */
+            char combined[MAX_INPUT * 2] = {0};
+            memcpy(combined, start, prefix_len);
+            size_t ci = prefix_len;
+
+            while (*p && *p != quote) {
+                if (*p == '\\' && *(p+1) == quote) {
+                    combined[ci++] = quote;
+                    p += 2;
+                } else {
+                    combined[ci++] = *p++;
+                }
+            }
+            if (*p == quote) p++; /* skip closing quote */
+            combined[ci] = '\0';
+
+            char *value = strdup(combined);
+            if (!value) { tokens_free(tokens, count); return NULL; }
+            if (!add_token(&tokens, &count, &capacity, TOK_WORD, value))
+                return NULL;
+            
+            /* If the word contains '=', it's an assignment, not a quoted arg */
+            int is_assignment = 0;
+            for (size_t j = 0; j < prefix_len; j++) {
+                if (combined[j] == '=') {
+                    is_assignment = 1;
+                    break;
+                }
+            }
+            
+            if (!is_assignment) {
+                tokens[count-1].quoted = 1;
+            }
+            continue;
         }
-        if (!add_token(&tokens, &count, &capacity, TOK_WORD, value)) return NULL;
+
+        /* plain word */
+        char *value = strdup_range(start, p);
+        if (!value) { tokens_free(tokens, count); return NULL; }
+        if (!add_token(&tokens, &count, &capacity, TOK_WORD, value))
+            return NULL;
     }
 
     // Add EOF token

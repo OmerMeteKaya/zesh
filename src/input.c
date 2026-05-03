@@ -557,6 +557,7 @@ static char *search_history_interactive(const char *prompt_str) {
 
         /* Enter — accept */
         if (c == '\r' || c == '\n') {
+            write(STDOUT_FILENO, "\033[K", 3);
             char *ret = NULL;
             if (results && rcount > 0 && sel < rcount)
                 ret = strdup(results[sel]);
@@ -861,6 +862,13 @@ char *read_line(const char *prompt) {
         
         /* Enter */
         if (c == '\r' || c == '\n') {
+            write(STDOUT_FILENO, "\r", 1);
+            write(STDOUT_FILENO, prompt, strlen(prompt));
+            char tmp_buf[MAXIMUM_INPUT + 1];
+            memcpy(tmp_buf, buf, len);
+            tmp_buf[len] = '\0';
+            write(STDOUT_FILENO, tmp_buf, len);
+            write(STDOUT_FILENO, "\033[K", 3);
             if (panel_sel >= 0 && panel_items) {
                 /* insert selected item into buf replacing current word */
                 int ws = pos;

@@ -203,7 +203,12 @@ int main() {
             continue;
         }
 
+        tokens = brace_expand_tokens(tokens, &ntokens);
+        if (!tokens) continue;
         tokens = glob_expand_tokens(tokens, &ntokens, last_exit_status);
+        if (!tokens) continue;
+        tokens = word_split_tokens(tokens, ntokens, &ntokens);
+        if (!tokens) continue;
 
 
         if (ntokens > 0 && tokens[0].type == TOK_WORD && tokens[0].value) {

@@ -25,7 +25,8 @@ typedef enum {
 
 typedef struct {
     TokenType type;
-    char     *value;   /* TOK_WORD için malloc'd string */
+    char     *value;
+    int       quoted;
 } Token;
 
 typedef struct {
@@ -82,5 +83,6 @@ char *expand_word(const char *word, int last_exit_status);
 void  expand_tokens(Token *toks, int ntokens, int last_exit_status);
 Token *glob_expand_tokens(Token *toks, int *ntokens, int last_exit_status);
 Token *brace_expand_tokens(Token *toks, int *ntokens);
+Token *word_split_tokens(Token *toks, int ntokens, int *new_count);
 
 #endif //MYSHELL_SHELL_H

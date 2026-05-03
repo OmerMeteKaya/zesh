@@ -417,6 +417,7 @@ Token *brace_expand_tokens(Token *toks, int *ntokens) {
             }
             new_toks[new_count].type = TOK_WORD;
             new_toks[new_count].value = expanded[j];
+            new_toks[new_count].quoted = 0;
             new_count++;
         }
         free(expanded);
@@ -787,6 +788,7 @@ Token *glob_expand_tokens(Token *toks, int *ntokens, int last_exit_status) {
                 for (size_t j = 0; j < g.gl_pathc; j++) {
                     new_toks[new_index].type = TOK_WORD;
                     new_toks[new_index].value = strdup(g.gl_pathv[j]);
+                    new_toks[new_index].quoted = 0;   /* ← ekle */
                     if (!new_toks[new_index].value) {
                         // Bellek hatası durumunda kaynakları temizle
                         for (int k = 0; k < new_index; k++) {
@@ -803,6 +805,7 @@ Token *glob_expand_tokens(Token *toks, int *ntokens, int last_exit_status) {
                 // Glob başarısız oldu, orijinal token'ı kopyala
                 new_toks[new_index].type = toks[i].type;
                 new_toks[new_index].value = strdup(toks[i].value);
+                new_toks[new_index].quoted = toks[i].quoted;  /* ← orijinalden kopyala */
                 if (!new_toks[new_index].value) {
                     for (int k = 0; k < new_index; k++) {
                         free(new_toks[k].value);
@@ -817,6 +820,7 @@ Token *glob_expand_tokens(Token *toks, int *ntokens, int last_exit_status) {
             new_toks[new_index].type = toks[i].type;
             if (toks[i].value) {
                 new_toks[new_index].value = strdup(toks[i].value);
+                new_toks[new_index].quoted = toks[i].quoted;
                 if (!new_toks[new_index].value) {
                     for (int k = 0; k < new_index; k++) {
                         free(new_toks[k].value);
@@ -834,10 +838,86 @@ Token *glob_expand_tokens(Token *toks, int *ntokens, int last_exit_status) {
     // EOF token'ı ekle
     new_toks[new_index].type = TOK_EOF;
     new_toks[new_index].value = NULL;
+    new_toks[new_index].quoted = 0;
     
     // Eski token dizisini serbest bırak (değerleri değil)
     free(toks);
     
     *ntokens = expanded_count;
     return new_toks;
+}
+
+Token *word_split_tokens(Token *toks, int ntokens, int *new_count) {
+    /*
+     * For each TOK_WORD token with quoted=0,
+     * split on whitespace after variable expansion.
+     * quoted=1 tokens are kept as single tokens (no splitting).
+     * Returns new malloc'd token array, frees old one.
+     */
+
+    Token *result = malloc(ntokens * 8 * sizeof(Token));
+    if (!result) { *new_count = ntokens; return toks; }
+    int count = 0;
+    int cap = ntokens * 8;
+
+    for (int i = 0; i < ntokens; i++) {
+        /* non-word tokens: copy as-is */
+        if (toks[i].type != TOK_WORD || !toks[i].value) {
+            if (count >= cap) {
+                cap *= 2;
+                Token *tmp = realloc(result, cap * sizeof(Token));
+                if (!tmp) break;
+                result = tmp;
+            }
+            result[count++] = toks[i];
+            toks[i].value = NULL; /* ownership transferred */
+            continue;
+        }
+
+        /* quoted token: no splitting */
+        if (toks[i].quoted) {
+            if (count >= cap) {
+                cap *= 2;
+                Token *tmp = realloc(result, cap * sizeof(Token));
+                if (!tmp) break;
+                result = tmp;
+            }
+            result[count++] = toks[i];
+            toks[i].value = NULL;
+            continue;
+        }
+
+        /* unquoted token: split on whitespace */
+        char *val = toks[i].value;
+        char *p = val;
+        while (*p) {
+            /* skip leading whitespace */
+            while (*p == ' ' || *p == '\t') p++;
+            if (!*p) break;
+
+            /* find end of word */
+            char *word_start = p;
+            while (*p && *p != ' ' && *p != '\t') p++;
+            int wlen = p - word_start;
+            if (wlen == 0) continue;
+
+            if (count >= cap) {
+                cap *= 2;
+                Token *tmp = realloc(result, cap * sizeof(Token));
+                if (!tmp) break;
+                result = tmp;
+            }
+            result[count].type   = TOK_WORD;
+            result[count].value  = strndup(word_start, wlen);
+            result[count].quoted = 0;
+            count++;
+        }
+        free(toks[i].value);
+        toks[i].value = NULL;
+    }
+
+    free(toks);
+    *new_count = count;
+    
+    return result;
 }
