@@ -87,9 +87,39 @@ Token *lex(const char *input, int *ntokens) {
                 p++;
                 continue;
             case '<':
-                if (!add_token(&tokens, &count, &capacity, TOK_REDIR_IN, NULL)) return NULL;
-                p++;
-                continue;
+                if (*(p+1) == '<') {
+                    /* here-doc: << DELIM or <<'DELIM' */
+                    p += 2;
+                    /* skip whitespace */
+                    while (*p == ' ' || *p == '\t') p++;
+                    
+                    int noexp = 0;
+                    /* check for quoted delimiter */
+                    if (*p == '\'' || *p == '"') {
+                        noexp = 1;
+                        p++; /* skip opening quote */
+                    }
+                    
+                    /* read delimiter word */
+                    const char *delim_start = p;
+                    while (*p && !isspace(*p) && *p != '\'' && *p != '"') p++;
+                    
+                    char *delim = strndup(delim_start, p - delim_start);
+                    if (!delim) return NULL;
+                    
+                    /* skip closing quote if present */
+                    if (*p == '\'' || *p == '"') p++;
+                    
+                    TokenType htype = noexp ? TOK_HEREDOC_NOEXP : TOK_HEREDOC;
+                    if (!add_token(&tokens, &count, &capacity, htype, delim))
+                        return NULL;
+                    continue;
+                } else {
+                    if (!add_token(&tokens, &count, &capacity, TOK_REDIR_IN, NULL))
+                        return NULL;
+                    p++;
+                    continue;
+                }
             case '>':
                 if (*(p+1) == '>') {
                     if (!add_token(&tokens, &count, &capacity, TOK_REDIR_APP, NULL)) return NULL;

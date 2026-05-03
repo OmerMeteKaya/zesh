@@ -1,5 +1,5 @@
 CC     = gcc
-CFLAGS = -Wall -std=c99 -fPIC -I../include
+CFLAGS = -Wall -std=c23 -fPIC -I../include
 PLUGINS = git.so
 
 all: $(PLUGINS)

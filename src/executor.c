@@ -65,13 +65,48 @@ int execute(Pipeline *p) {
     if (p->ncommands == 1) {
         Command *cmd = &p->commands[0];
         
+        /* --- PARENT: setup heredoc pipe before fork --- */
+        int heredoc_pipe[2] = {-1, -1};
+        if (cmd->heredoc_content) {
+            if (pipe(heredoc_pipe) < 0) {
+                perror("pipe");
+                return -1;
+            }
+            
+            /* expand variables in heredoc content */
+            const char *content_to_write = cmd->heredoc_content;
+            char *expanded_content = NULL;
+            if (cmd->heredoc_expand) {
+                extern char *expand_word(const char *word, int last_exit);
+                extern int last_exit_status;
+                
+                expanded_content = expand_word(cmd->heredoc_content,
+                                                last_exit_status);
+                if (expanded_content) content_to_write = expanded_content;
+            }
+            
+            size_t hlen = strlen(content_to_write);
+            size_t written = 0;
+            while (written < hlen) {
+                ssize_t w = write(heredoc_pipe[1],
+                                  content_to_write + written,
+                                  hlen - written);
+                if (w <= 0) break;
+                written += w;
+            }
+            close(heredoc_pipe[1]);
+            free(expanded_content);
+        }
+
         pid_t pid = fork();
         if (pid == 0) {
-            // Child process
             signals_child();
-            
-            // Handle input redirection
-            if (cmd->infile) {
+
+            /* heredoc stdin */
+            if (heredoc_pipe[0] >= 0) {
+                dup2(heredoc_pipe[0], STDIN_FILENO);
+                close(heredoc_pipe[0]);
+            } else if (cmd->infile) {
                 int fd = open(cmd->infile, O_RDONLY);
                 if (fd < 0) {
                     perror(cmd->infile);
@@ -80,10 +115,10 @@ int execute(Pipeline *p) {
                 dup2(fd, STDIN_FILENO);
                 close(fd);
             }
-            
-            // Handle output redirection
+
+            /* outfile handling — existing code */
             if (cmd->outfile) {
-                int flags = O_WRONLY | O_CREAT | (cmd->append ? O_APPEND : O_TRUNC);
+                int flags = O_WRONLY|O_CREAT|(cmd->append?O_APPEND:O_TRUNC);
                 int fd = open(cmd->outfile, flags, 0644);
                 if (fd < 0) {
                     perror(cmd->outfile);
@@ -92,13 +127,13 @@ int execute(Pipeline *p) {
                 dup2(fd, STDOUT_FILENO);
                 close(fd);
             }
-            
+
             // Execute the command
             execvp(cmd->argv[0], cmd->argv);
             perror(cmd->argv[0]);
             _exit(127);
         } else if (pid > 0) {
-            // Parent process
+            if (heredoc_pipe[0] >= 0) close(heredoc_pipe[0]);
             setpgid(pid, pid);
             
             if (p->background) {

@@ -23,5 +23,10 @@ int   history_count(void);
 int   history_total_count(void);
 void  history_close(void);
 
+/* Read here-doc content until delimiter.
+   Returns malloc'd string with all lines joined by \n.
+   expand=1: expand variables, expand=0: literal */
+char *read_heredoc(const char *delimiter, int expand);
+
 #endif
 

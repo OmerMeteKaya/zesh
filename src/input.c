@@ -1264,3 +1264,71 @@ char *read_line(const char *prompt) {
     
     done: ;   /* UTF-8 error recovery */
 }
+
+char *read_heredoc(const char *delimiter, int expand) {
+    /*
+     * Reads lines from stdin until a line matching delimiter exactly.
+     * Returns malloc'd string with content, caller must free().
+     * expand parameter reserved for future use (expansion handled in expand.c).
+     */
+
+    size_t buf_cap = 4096;
+    char *buf = malloc(buf_cap);
+    if (!buf) return NULL;
+    buf[0] = '\0';
+    size_t buf_len = 0;
+
+    char line[MAXIMUM_INPUT];
+    int delim_len = strlen(delimiter);
+
+    /* save and restore terminal — we need cooked mode for here-doc input */
+    struct termios orig;
+    int is_tty = isatty(STDIN_FILENO);
+    if (is_tty) {
+        tcgetattr(STDIN_FILENO, &orig);
+        struct termios cooked = orig;
+        cooked.c_lflag |= (ICANON | ECHO);
+        tcsetattr(STDIN_FILENO, TCSAFLUSH, &cooked);
+    }
+
+    while (1) {
+        if (is_tty) {
+            /* show continuation prompt */
+            write(STDOUT_FILENO, "> ", 2);
+        }
+
+        if (!fgets(line, sizeof(line), stdin)) break;
+
+        /* strip trailing newline for comparison */
+        int line_len = strlen(line);
+        if (line_len > 0 && line[line_len-1] == '\n') {
+            line[line_len-1] = '\0';
+            line_len--;
+        }
+
+        /* check for delimiter */
+        if (line_len == delim_len &&
+            strcmp(line, delimiter) == 0) {
+            break;
+        }
+
+        /* append line + newline to buf */
+        size_t needed = buf_len + line_len + 2; /* +2 for \n and \0 */
+        if (needed > buf_cap) {
+            while (buf_cap < needed) buf_cap *= 2;
+            char *tmp = realloc(buf, buf_cap);
+            if (!tmp) { free(buf); buf = NULL; break; }
+            buf = tmp;
+        }
+        memcpy(buf + buf_len, line, line_len);
+        buf_len += line_len;
+        buf[buf_len++] = '\n';
+        buf[buf_len] = '\0';
+    }
+
+    if (is_tty) {
+        tcsetattr(STDIN_FILENO, TCSAFLUSH, &orig);
+    }
+
+    return buf;  /* may be NULL on alloc failure */
+}

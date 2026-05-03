@@ -2,8 +2,8 @@
 // Created by mete on 23.04.2026.
 //
 
-#ifndef MYSHELL_SHELL_H
-#define MYSHELL_SHELL_H
+#ifndef SHELL_H
+#define SHELL_H
 
 
 #define MAX_ARGS    64
@@ -20,7 +20,9 @@ typedef enum {
     TOK_BG,          /* &  */
     TOK_AND,         /* && */
     TOK_OR,          /* || */
-    TOK_SEMI         /* ;  */
+    TOK_SEMI,         /* ;  */
+    TOK_HEREDOC,     /* << */
+    TOK_HEREDOC_NOEXP /* <<' (no expansion) */
 } TokenType;
 
 typedef struct {
@@ -35,6 +37,8 @@ typedef struct {
     char  *infile;
     char  *outfile;
     int    append;
+    char  *heredoc_content;
+    int    heredoc_expand;  /* 1=expand vars, 0=literal */
 } Command;
 
 typedef struct {
@@ -44,7 +48,7 @@ typedef struct {
 } Pipeline;
 
 typedef enum {
-    OP_NONE,   /* son eleman */
+    OP_NONE,
     OP_AND,    /* && */
     OP_OR,     /* || */
     OP_SEMI    /* ;  */
@@ -85,4 +89,4 @@ Token *glob_expand_tokens(Token *toks, int *ntokens, int last_exit_status);
 Token *brace_expand_tokens(Token *toks, int *ntokens);
 Token *word_split_tokens(Token *toks, int ntokens, int *new_count);
 
-#endif //MYSHELL_SHELL_H
+#endif //SHELL_H

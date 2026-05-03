@@ -18,6 +18,8 @@ static Command *add_command(Command **commands, int *count, int *capacity) {
         *commands = tmp;
     }
     memset(&(*commands)[*count], 0, sizeof(Command));
+    (*commands)[*count].heredoc_content = NULL;
+    (*commands)[*count].heredoc_expand = 1;  /* default to expand */
     (*count)++;
     return *commands;
 }
@@ -180,6 +182,24 @@ Pipeline *parse(Token *toks, int ntokens) {
                 i++;
                 break;
 
+            case TOK_HEREDOC:
+            case TOK_HEREDOC_NOEXP:
+                /* delimiter is in t.value */
+                /* read here-doc content now — blocking read from stdin */
+                {
+                    extern char *read_heredoc(const char *delim, int expand);
+                    int expand = (t.type == TOK_HEREDOC) ? 1 : 0;
+                    char *content = read_heredoc(t.value, expand);
+                    if (current_cmd) {
+                        current_cmd->heredoc_content = content;
+                        current_cmd->heredoc_expand = (t.type == TOK_HEREDOC) ? 1 : 0;
+                    } else {
+                        free(content);
+                    }
+                }
+                i++;
+                break;
+
             case TOK_WORD:
                 if (!add_arg(&argv, &argv_count, &argv_capacity, t.value)) {
                     goto error;
@@ -266,6 +286,10 @@ void pipeline_free(Pipeline *p) {
         }
         if (cmd->outfile) {
             free(cmd->outfile);
+        }
+        if (cmd->heredoc_content) {
+            free(cmd->heredoc_content);
+            cmd->heredoc_content = NULL;
         }
     }
     free(p->commands);

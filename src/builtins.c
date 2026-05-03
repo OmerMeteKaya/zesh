@@ -12,6 +12,7 @@
 #include "../include/jobs.h"
 #include "../include/alias.h"
 #include "../include/rc.h"
+#include "../include/shell.h"
 
 static void restore_terminal(void) {
     struct termios t;
@@ -21,15 +22,6 @@ static void restore_terminal(void) {
     /* move to new line so prompt is clean */
     write(STDOUT_FILENO, "\r\n", 2);
 }
-
-// Assuming Command structure is defined elsewhere
-typedef struct {
-    char **argv;
-    int argc;
-    char *infile;
-    char *outfile;
-    int append;
-} Command;
 
 int is_builtin(const char *cmd) {
     if (!cmd) return 0;
@@ -330,4 +322,6 @@ int run_builtin(Command *cmd) {
         rc_load(cmd->argv[1]);
         return 0;
     }
+    
+    return 1; // Not a builtin command
 }

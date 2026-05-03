@@ -13,7 +13,6 @@ add_executable(shell
         src/history.c
         src/security.c
         include/plugin.h
-        plugins/git_status.c
         include/jobs.h
         src/jobs.c
         src/signals.c
