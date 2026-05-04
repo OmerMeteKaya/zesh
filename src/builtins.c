@@ -23,6 +23,27 @@ static void restore_terminal(void) {
     write(STDOUT_FILENO, "\r\n", 2);
 }
 
+static void echo_print_escaped(const char *s) {
+    while (*s) {
+        if (*s == '\\' && *(s+1)) {
+            s++;
+            switch (*s) {
+                case 'n': putchar('\n'); break;
+                case 't': putchar('\t'); break;
+                case 'r': putchar('\r'); break;
+                case '\\': putchar('\\'); break;
+                case 'a': putchar('\a'); break;
+                case 'b': putchar('\b'); break;
+                case '0': putchar('\0'); break;
+                default: putchar('\\'); putchar(*s); break;
+            }
+            s++;
+        } else {
+            putchar(*s++);
+        }
+    }
+}
+
 int is_builtin(const char *cmd) {
     if (!cmd) return 0;
     
@@ -111,24 +132,31 @@ int run_builtin(Command *cmd) {
     }
     
     if (strcmp(builtin_cmd, "echo") == 0) {
-        int newline = 1;
-        int start = 1;
-        
-        // Check for -n flag
-        if (cmd->argc > 1 && strcmp(cmd->argv[1], "-n") == 0) {
-            newline = 0;
-            start = 2;
+        int escape = 0;
+        int start_arg = 1;
+        if (cmd->argc >= 2 && strcmp(cmd->argv[1], "-e") == 0) {
+            escape = 1;
+            start_arg = 2;
+        }
+        int no_newline = 0;
+        if (cmd->argc >= 2 && strcmp(cmd->argv[start_arg-1+!escape], "-n") == 0) {
+            no_newline = 1;
+            start_arg++;
         }
         
-        for (int i = start; i < cmd->argc; i++) {
-            if (i > start) {
-                printf(" ");
+        for (int i = start_arg; i < cmd->argc; i++) {
+            if (i > start_arg) {
+                putchar(' ');
             }
-            printf("%s", cmd->argv[i]);
+            if (escape) {
+                echo_print_escaped(cmd->argv[i]);
+            } else {
+                fputs(cmd->argv[i], stdout);
+            }
         }
         
-        if (newline) {
-            printf("\n");
+        if (!no_newline) {
+            putchar('\n');
         }
         
         return 0;
@@ -282,11 +310,9 @@ int run_builtin(Command *cmd) {
         *eq = '\0';
         char *name = combined;
         char *value = eq + 1;
-        
-        /* baştaki boşlukları atla */
+
         while (*value == ' ') value++;
 
-        /* tüm dış tırnak katmanlarını soy */
         while (*value == '\'' || *value == '"') {
             char quote = *value;
             int vlen = strlen(value);
@@ -308,7 +334,6 @@ int run_builtin(Command *cmd) {
                 break;
             }
         }
-        fprintf(stderr, "DEBUG name='%s' value='%s'\n", name, value);
         alias_add(name, value);
         return 0;
     }

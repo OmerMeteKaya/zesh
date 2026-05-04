@@ -14,6 +14,37 @@
 
 extern void set_fg_pid(pid_t pid);
 extern int  last_exit_status;
+static int g_in_procsubst = 0;
+
+
+
+int execute_list_in_subshell(CmdList *list) {
+    /*
+     * Like execute_list but runs builtins in a forked child.
+     * Used by process substitution children where stdout/stdin
+     * are already redirected to a pipe — we must not dup/restore fds.
+     */
+    if (!list || list->count == 0) return 0;
+    g_in_procsubst = 1;
+    int last_status = 0;
+
+    for (int i = 0; i < list->count; i++) {
+        CmdNode *node = &list->nodes[i];
+        if (!node->pipeline) continue;
+
+        if (i > 0) {
+            ListOp prev_op = list->nodes[i-1].op;
+            if (prev_op == OP_AND && last_status != 0) continue;
+            if (prev_op == OP_OR  && last_status == 0) continue;
+        }
+
+        /* Always go through execute() — never the in-process builtin path */
+        last_status = execute(node->pipeline);
+        last_exit_status = last_status;
+    }
+    g_in_procsubst = 0;
+    return last_status;
+}
 
 int execute_list(CmdList *list) {
     if (!list || list->count == 0) return 0;
@@ -38,7 +69,48 @@ int execute_list(CmdList *list) {
         if (p->ncommands > 0 &&
             p->commands[0].argc > 0 &&
             is_builtin(p->commands[0].argv[0])) {
-            last_status = run_builtin(&p->commands[0]);
+
+            Command *bcmd = &p->commands[0];
+            int saved_stdout = -1;
+            int saved_stdin  = -1;
+            int out_fd = -1;
+            int in_fd  = -1;
+
+            /* redirect stdout if outfile specified */
+            if (bcmd->outfile) {
+                int flags = O_WRONLY|O_CREAT|
+                            (bcmd->append ? O_APPEND : O_TRUNC);
+                out_fd = open(bcmd->outfile, flags, 0644);
+                if (out_fd >= 0) {
+                    saved_stdout = dup(STDOUT_FILENO);
+                    dup2(out_fd, STDOUT_FILENO);
+                    close(out_fd);
+                }
+            }
+
+            /* redirect stdin if infile specified */
+            if (bcmd->infile) {
+                in_fd = open(bcmd->infile, O_RDONLY);
+                if (in_fd >= 0) {
+                    saved_stdin = dup(STDIN_FILENO);
+                    dup2(in_fd, STDIN_FILENO);
+                    close(in_fd);
+                }
+            }
+
+            last_status = run_builtin(bcmd);
+
+            /* restore stdout */
+            if (saved_stdout >= 0) {
+                fflush(stdout);
+                dup2(saved_stdout, STDOUT_FILENO);
+                close(saved_stdout);
+            }
+            /* restore stdin */
+            if (saved_stdin >= 0) {
+                dup2(saved_stdin, STDIN_FILENO);
+                close(saved_stdin);
+            }
         } else {
             last_status = execute(p);
         }
@@ -47,6 +119,12 @@ int execute_list(CmdList *list) {
         extern int last_exit_status;
         last_exit_status = last_status;
     }
+
+    /* Close process substitution fds and reap their children */
+    extern void ps_fds_close(void);
+    extern void ps_pids_wait(void);
+    ps_fds_close();
+    ps_pids_wait();
 
     return last_status;
 }
@@ -149,15 +227,15 @@ int execute(Pipeline *p) {
                 return 0;
             } else {
                 // Give terminal control to child process group
-                tcsetpgrp(STDIN_FILENO, pid);
-                set_fg_pid(pid);
+                if (!g_in_procsubst) tcsetpgrp(STDIN_FILENO, pid);
+                if (!g_in_procsubst) set_fg_pid(pid);
                 
                 int status;
                 pid_t result = waitpid(pid, &status, WUNTRACED);
                 
                 set_fg_pid(0);
                 // Take terminal control back
-                tcsetpgrp(STDIN_FILENO, getpgrp());
+                if (!g_in_procsubst) tcsetpgrp(STDIN_FILENO, getpgrp());
                 
                 // Handle stopped process
                 if (result > 0 && WIFSTOPPED(status)) {
@@ -191,6 +269,44 @@ int execute(Pipeline *p) {
         if (!pipes) {
             perror("malloc");
             return -1;
+        }
+        
+        /* setup heredoc pipes for each command */
+        int heredoc_pipes[MAX_ARGS][2];
+        for (int i = 0; i < p->ncommands; i++) {
+            heredoc_pipes[i][0] = -1;
+            heredoc_pipes[i][1] = -1;
+        }
+        for (int i = 0; i < p->ncommands; i++) {
+            Command *cmd = &p->commands[i];
+            if (!cmd->heredoc_content) continue;
+
+            if (pipe(heredoc_pipes[i]) < 0) {
+                perror("pipe");
+                continue;
+            }
+
+            /* expand and write heredoc content */
+            extern char *expand_word(const char *word, int last_exit);
+            extern int last_exit_status;
+            const char *content = cmd->heredoc_content;
+            char *expanded = NULL;
+            if (cmd->heredoc_expand) {
+                expanded = expand_word(content, last_exit_status);
+                if (expanded) content = expanded;
+            }
+            size_t hlen = strlen(content);
+            size_t written = 0;
+            while (written < hlen) {
+                ssize_t w = write(heredoc_pipes[i][1],
+                                  content + written,
+                                  hlen - written);
+                if (w <= 0) break;
+                written += w;
+            }
+            close(heredoc_pipes[i][1]);
+            heredoc_pipes[i][1] = -1;
+            free(expanded);
         }
         
         for (int i = 0; i < p->ncommands - 1; i++) {
@@ -243,8 +359,17 @@ int execute(Pipeline *p) {
                 }
                 setpgid(0, pgid);
                 
-                // Handle input redirection for first command
-                if (i == 0 && cmd->infile) {
+                /* Handle stdin redirection */
+                /* heredoc pipe takes priority over regular pipe */
+                if (heredoc_pipes[i][0] >= 0) {
+                    dup2(heredoc_pipes[i][0], STDIN_FILENO);
+                    close(heredoc_pipes[i][0]);
+                } else if (i > 0) {
+                    /* Connect previous pipe's read end to stdin */
+                    dup2(pipes[i-1][0], STDIN_FILENO);
+                    close(pipes[i-1][0]);
+                } else if (cmd->infile) {
+                    /* Handle infile for first command when no heredoc */
                     int fd = open(cmd->infile, O_RDONLY);
                     if (fd < 0) {
                         perror(cmd->infile);
@@ -253,8 +378,20 @@ int execute(Pipeline *p) {
                     dup2(fd, STDIN_FILENO);
                     close(fd);
                 }
-                // Handle output redirection for last command
-                else if (i == p->ncommands - 1 && cmd->outfile) {
+                
+                /* also close all heredoc pipe read ends in child */
+                for (int k = 0; k < p->ncommands; k++) {
+                    if (k != i && heredoc_pipes[k][0] >= 0)
+                        close(heredoc_pipes[k][0]);
+                }
+                
+                /* Handle stdout redirection */
+                if (i < p->ncommands - 1) {
+                    /* Connect current pipe's write end to stdout */
+                    dup2(pipes[i][1], STDOUT_FILENO);
+                    close(pipes[i][1]);
+                } else if (cmd->outfile) {
+                    /* Handle outfile for last command */
                     int flags = O_WRONLY | O_CREAT | (cmd->append ? O_APPEND : O_TRUNC);
                     int fd = open(cmd->outfile, flags, 0644);
                     if (fd < 0) {
@@ -265,15 +402,6 @@ int execute(Pipeline *p) {
                     close(fd);
                 }
                 
-                // Connect pipes
-                if (i > 0) {
-                    // Connect previous pipe's read end to stdin
-                    dup2(pipes[i-1][0], STDIN_FILENO);
-                }
-                if (i < p->ncommands - 1) {
-                    // Connect current pipe's write end to stdout
-                    dup2(pipes[i][1], STDOUT_FILENO);
-                }
                 
                 // Close all pipe file descriptors
                 for (int j = 0; j < p->ncommands - 1; j++) {
@@ -316,6 +444,13 @@ int execute(Pipeline *p) {
             close(pipes[i][1]);
             free(pipes[i]);
         }
+        /* close all heredoc pipe read ends */
+        for (int i = 0; i < p->ncommands; i++) {
+            if (heredoc_pipes[i][0] >= 0) {
+                close(heredoc_pipes[i][0]);
+                heredoc_pipes[i][0] = -1;
+            }
+        }
         free(pipes);
         
         // Handle background pipeline
@@ -335,8 +470,8 @@ int execute(Pipeline *p) {
         
         // Foreground pipeline
         // Give terminal control to child process group
-        tcsetpgrp(STDIN_FILENO, pgid);
-        set_fg_pid(pgid);
+        if (!g_in_procsubst) tcsetpgrp(STDIN_FILENO, pgid);
+        if (!g_in_procsubst) set_fg_pid(pgid);
         
         // Wait for children
         int status = 0;
@@ -357,7 +492,7 @@ int execute(Pipeline *p) {
         }
 
         set_fg_pid(0);
-        tcsetpgrp(STDIN_FILENO, getpgrp());
+        if (!g_in_procsubst) tcsetpgrp(STDIN_FILENO, getpgrp());
 
         if (stopped > 0 && done < p->ncommands) {
             /* at least one command stopped — add whole pipeline as stopped job */

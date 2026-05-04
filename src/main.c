@@ -3,6 +3,7 @@
 //
 
 extern int last_exit_status;
+extern char *read_heredoc(const char *delimiter, int expand);
 
 #include <time.h>
 #include <sys/stat.h>
@@ -10,6 +11,8 @@ extern int last_exit_status;
 #include <stdlib.h>
 #include <string.h>
 #include <unistd.h>
+#include <termios.h>
+
 
 #include "../include/shell.h"
 #include "../include/input.h"
@@ -22,7 +25,21 @@ extern int last_exit_status;
 void signals_init(void);
 void jobs_init(void);
 
-
+void fill_heredocs(CmdList *list) {
+    if (!list) return;
+    for (int i = 0; i < list->count; i++) {
+        Pipeline *p = list->nodes[i].pipeline;
+        if (!p) continue;
+        for (int j = 0; j < p->ncommands; j++) {
+            Command *cmd = &p->commands[j];
+            if (cmd->heredoc_delim && !cmd->heredoc_content) {
+                cmd->heredoc_content = read_heredoc(
+                    cmd->heredoc_delim,
+                    cmd->heredoc_expand);
+            }
+        }
+    }
+}
 
 int main() {
     // Initialize signals and jobs
@@ -95,7 +112,7 @@ int main() {
             /* plugin hook — git branch vb. */
             char *left = hook_prompt_left();
             if (left) {
-                /* git varsa: ➜  HH:MM user dir (branch) */
+                /* if git: ➜  HH:MM user dir (branch) */
                 char time_part[32] = "";
                 char user_part[64] = "";
                 
@@ -108,7 +125,7 @@ int main() {
                     snprintf(time_part, sizeof(time_part), "\033[0;37m%s\033[0m ", timebuf);
                 }
                 
-                /* kullanıcı */
+                /* user */
                 if (g_config.prompt_show_user) {
                     const char *user = getenv("USER");
                     if (user) {
@@ -117,11 +134,11 @@ int main() {
                 }
 
                 snprintf(prompt, sizeof(prompt),
-                    "\033[1;32m➜\033[0m  "        /* yeşil ok */
-                    "%s"                           /* saat */
-                    "%s"                           /* kullanıcı */
-                    "\033[1;34m%s\033[0m "         /* mavi dizin */
-                    "%s"                           /* git (zaten renkli) */
+                    "\033[1;32m➜\033[0m  "        /* green arrow */
+                    "%s"                           /* time */
+                    "%s"                           /* user */
+                    "\033[1;34m%s\033[0m "         /* blue directory */
+                    "%s"                           /* git */
                     "\033[0m> ",                   /* reset + > */
                     time_part,
                     user_part,
@@ -164,7 +181,6 @@ int main() {
             printf("\n");
             break;
         }
-        /* strip trailing newline — artık gerekmiyor ama zarar vermez */
         input[strcspn(input, "\n")] = '\0';
         if (strlen(input) == 0) { free(input); continue; }
         
@@ -177,13 +193,12 @@ int main() {
         }
         int ntokens;
         Token *tokens = lex(input, &ntokens);
-
         int is_assignment = 0;
-        if (ntokens == 2 &&              /* sadece bir token + EOF */
+        if (ntokens == 2 &&
             tokens[0].type == TOK_WORD &&
             tokens[0].value) {
             char *eq = strchr(tokens[0].value, '=');
-            if (eq && eq != tokens[0].value) {  /* = var ve başta değil */
+            if (eq && eq != tokens[0].value) {
                 /* KEY=VALUE — local variable set */
                 *eq = '\0';
                 char *key = tokens[0].value;
@@ -266,8 +281,20 @@ int main() {
             if (should_run) {
                 CmdList *list = parse_list(tokens, ntokens);
                 if (list) {
+                    fill_heredocs(list);
                     execute_list(list);
                     cmdlist_free(list);
+                    /* restore raw mode immediately after execution */
+                    struct termios after;
+                    tcgetattr(STDIN_FILENO, &after);
+                            (after.c_lflag & ICANON) ? 1 : 0,
+                            (after.c_lflag & ECHO) ? 1 : 0;
+                    struct termios raw_restore;
+                    tcgetattr(STDIN_FILENO, &raw_restore);
+                    raw_restore.c_lflag &= ~(ICANON | ECHO | ISIG);
+                    raw_restore.c_cc[VMIN] = 1;
+                    raw_restore.c_cc[VTIME] = 0;
+                    tcsetattr(STDIN_FILENO, TCSAFLUSH, &raw_restore);
                 }
             }
         }
@@ -280,4 +307,3 @@ int main() {
         plugins_unload();
         return 0;
     }
-

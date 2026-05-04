@@ -2,10 +2,12 @@
 // Created by mete on 23.04.2026.
 //
 
-#include <signal.h>
+#include <stdio.h>
 #include <sys/wait.h>
 #include <unistd.h>
 #include "../include/jobs.h"
+
+extern int ps_pid_forget(pid_t pid);
 
 int last_exit_status = 0;
 
@@ -31,6 +33,17 @@ static void sigchld_handler(int sig) {
     
     // Loop through all pending child signals
     while ((pid = waitpid(-1, &status, WNOHANG | WUNTRACED)) > 0) {
+        // Check if this is a process substitution child we should ignore
+        if (ps_pid_forget(pid)) {
+            continue;
+        }
+
+        // Check if this pid belongs to a known job or is the foreground process
+        if (!job_find_by_pgid(pid) && pid != fg_pid) {
+            // Unknown pid, just reap it silently
+            continue;
+        }
+
         if (WIFEXITED(status) || WIFSIGNALED(status)) {
             // Child exited normally or was terminated by a signal
             job_remove(pid);

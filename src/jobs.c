@@ -106,3 +106,12 @@ Job *job_get_by_id(int id) {
     }
     return NULL;
 }
+
+Job *job_find_by_pgid(pid_t pgid) {
+    for (int i = 0; i < MAX_JOBS; i++) {
+        if (table[i].active && table[i].pgid == pgid) {
+            return &table[i];
+        }
+    }
+    return NULL;
+}

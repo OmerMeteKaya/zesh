@@ -30,10 +30,10 @@ void  job_set_status(pid_t pgid, JobStatus s);
 void  job_remove(pid_t pgid);
 void  jobs_print(void);
 Job  *job_get_by_id(int id);
+Job  *job_find_by_pgid(pid_t pgid);
 
 /* signals.c */
 void signals_init(void);
-void signals_child(void);
 
 
 #endif //JOBS_H

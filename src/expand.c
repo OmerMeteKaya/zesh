@@ -3,14 +3,85 @@
 //
 
 #include "../include/shell.h"
+#include "../include/signals.h"
 #include <stdlib.h>
 #include <string.h>
 #include <unistd.h>
 #include <ctype.h>
+#include <fcntl.h>
 #include <stdio.h>
 #include <glob.h>
 #include <sys/wait.h>
+#include <sys/stat.h>
 
+
+static pid_t ps_pids[32];
+static int   ps_pid_count = 0;
+static int   ps_fds[8];
+static int   ps_fd_count = 0;
+static int   ps_counter = 0;
+
+void ps_pid_register(pid_t pid) {
+    if (ps_pid_count < 32) {
+        ps_pids[ps_pid_count++] = pid;
+    }
+}
+
+int ps_pid_forget(pid_t pid) {
+    for (int i = 0; i < ps_pid_count; i++) {
+        if (ps_pids[i] == pid) {
+            // Remove by shifting remaining elements
+            for (int j = i; j < ps_pid_count - 1; j++) {
+                ps_pids[j] = ps_pids[j + 1];
+            }
+            ps_pid_count--;
+            return 1;
+        }
+    }
+    return 0;
+}
+
+void ps_fds_close(void) {
+    for (int i = 0; i < ps_fd_count; i++) {
+        if (ps_fds[i] >= 0) {
+            close(ps_fds[i]);
+            ps_fds[i] = -1;
+        }
+    }
+    ps_fd_count = 0;
+}
+
+/* Reap all registered process substitution child pids (non-blocking).
+ * Called at the end of execute_list() after the main command has exited
+ * and pipe read-ends have been closed, so the children will receive
+ * EPIPE/SIGPIPE or finish naturally. */
+void ps_pids_wait(void) {
+    for (int i = 0; i < ps_pid_count; i++) {
+        if (ps_pids[i] > 0) {
+            int status;
+            waitpid(ps_pids[i], &status, WNOHANG);
+            /* If still running, leave it — SIGCHLD handler will reap
+             * later and ps_pid_forget() will drop it silently. */
+        }
+    }
+    /* Clear the registry regardless; any still-running children remain
+     * in the pid list only until the SIGCHLD handler forgets them via
+     * ps_pid_forget(). Since we reset the array here, we need a separate
+     * shadow list. Simpler: only remove pids that were actually reaped. */
+    int remaining = 0;
+    for (int i = 0; i < ps_pid_count; i++) {
+        if (ps_pids[i] > 0) {
+            int status;
+            pid_t r = waitpid(ps_pids[i], &status, WNOHANG);
+            if (r == 0) {
+                /* still alive — keep registered so SIGCHLD can forget it */
+                ps_pids[remaining++] = ps_pids[i];
+            }
+            /* r > 0: reaped; r < 0: gone — drop either way */
+        }
+    }
+    ps_pid_count = remaining;
+}
 
 #define MAX_LOCAL_VARS 256
 typedef struct {
@@ -21,6 +92,80 @@ typedef struct {
 
 static LocalVar local_vars[MAX_LOCAL_VARS];
 static int local_var_count = 0;
+
+char *expand_process_substitution(const char *cmd_str, int write_mode) {
+    if (write_mode) {
+        return NULL;
+    }
+
+    int pipefd[2];
+    if (pipe(pipefd) < 0) return NULL;
+
+    pid_t pid = fork();
+    if (pid < 0) {
+        close(pipefd[0]);
+        close(pipefd[1]);
+        return NULL;
+    }
+
+    if (pid == 0) {
+        /* child */
+        signals_child();
+        
+        /* <(...): child writes stdout to pipe write end */
+        close(pipefd[0]);
+        dup2(pipefd[1], STDOUT_FILENO);
+        close(pipefd[1]);
+
+        /* run the command */
+        extern Token *lex(const char *input, int *ntokens);
+        extern Token *glob_expand_tokens(Token *toks, int *ntokens, int last_exit);
+        extern Token *word_split_tokens(Token *toks, int ntokens, int *new_count);
+        extern CmdList *parse_list(Token *toks, int ntokens);
+        extern int execute_list_in_subshell(CmdList *list);
+        extern void cmdlist_free(CmdList *list);
+        extern void tokens_free(Token *toks, int n);
+        extern int last_exit_status;
+
+        int ntokens;
+        Token *toks = lex(cmd_str, &ntokens);
+        if (toks) {
+            toks = glob_expand_tokens(toks, &ntokens, last_exit_status);
+            if (toks) {
+                toks = word_split_tokens(toks, ntokens, &ntokens);
+                if (toks) {
+                    CmdList *list = parse_list(toks, ntokens);
+                    if (list) {
+                        execute_list_in_subshell(list);
+                        cmdlist_free(list);
+                    }
+                    tokens_free(toks, ntokens);
+                }
+            }
+        }
+        _exit(0);
+    }
+
+    /* parent */
+    close(pipefd[1]);  /* write end closed in parent */
+    
+    /* register fd for later cleanup */
+    if (ps_fd_count < 8) {
+        ps_fds[ps_fd_count++] = pipefd[0];
+    }
+
+    /* register child pid to be ignored in SIGCHLD handler */
+    ps_pid_register(pid);
+
+    char *result = malloc(32);
+    if (!result) {
+        close(pipefd[0]);
+        return NULL;
+    }
+    snprintf(result, 32, "/dev/fd/%d", pipefd[0]);
+
+    return result;  /* caller must eventually close the fd */
+}
 
 void local_var_set(const char *name, const char *value) {
     for (int i = 0; i < local_var_count; i++) {
@@ -152,7 +297,6 @@ static long ae_expr(AEval *a) {
 }
 
 static char *eval_arithmetic(const char *expr) {
-    fprintf(stderr, "ARITH expr: '%s'\n", expr); /* debug — sonra sil */
 
     char expanded[1024] = {0};
     const char *p = expr;
@@ -534,6 +678,33 @@ char *expand_word(const char *word, int last_exit_status) {
     }
     
     while (*p && (in_double_quotes ? (p < word + word_len) : *p != '\0')) {
+        /* process substitution: <(...) or >(...) */
+        if ((*p == '<' || *p == '>') && *(p+1) == '(') {
+            int write_mode = (*p == '>') ? 1 : 0;
+            p += 2;  /* skip <( or >( */
+            const char *cmd_start = p;
+            int depth = 1;
+            while (*p && depth > 0) {
+                if (*p == '(') depth++;
+                else if (*p == ')') depth--;
+                p++;
+            }
+            int cmd_len = (p - 1) - cmd_start;
+            if (cmd_len > 0) {
+                char *cmd_str = strndup(cmd_start, cmd_len);
+                if (cmd_str) {
+                    char *fd_path = expand_process_substitution(
+                        cmd_str, write_mode);
+                    free(cmd_str);
+                    if (fd_path) {
+                        append_str(&buf, &len, &capacity, fd_path);
+                        free(fd_path);
+                    }
+                }
+            }
+            continue;
+        }
+
         // Handle tilde expansion (only at start of word or after slash, and not in double quotes for mid-word)
         if (*p == '~' && (p == word || *(p-1) == '/') && !in_double_quotes) {
             const char *home = getenv("HOME");
@@ -731,6 +902,8 @@ char *expand_word(const char *word, int last_exit_status) {
     return buf;
 }
 
+
+
 static int has_glob_chars(const char *word) {
     return strpbrk(word, "*?[") != NULL;
 }
@@ -751,14 +924,11 @@ void expand_tokens(Token *toks, int ntokens, int last_exit_status) {
 
 Token *glob_expand_tokens(Token *toks, int *ntokens, int last_exit_status) {
     if (!toks || !ntokens) return NULL;
-    
-    // Önce brace genişletmesi yap
+
     toks = brace_expand_tokens(toks, ntokens);
-    
-    // Sonra değişken genişletmesi yap
+
     expand_tokens(toks, *ntokens, last_exit_status);
-    
-    // Genişletilmiş token sayısını hesapla
+
     int expanded_count = 0;
     for (int i = 0; i < *ntokens; i++) {
         if (toks[i].type == TOK_WORD && toks[i].value && has_glob_chars(toks[i].value)) {
@@ -768,14 +938,13 @@ Token *glob_expand_tokens(Token *toks, int *ntokens, int last_exit_status) {
                 expanded_count += g.gl_pathc;
                 globfree(&g);
             } else {
-                expanded_count++; // Hata durumunda orijinal token'ı koru
+                expanded_count++;
             }
         } else {
             expanded_count++;
         }
     }
-    
-    // Yeni token dizisini oluştur
+
     Token *new_toks = malloc((expanded_count + 1) * sizeof(Token));
     if (!new_toks) return NULL;
     
@@ -788,9 +957,8 @@ Token *glob_expand_tokens(Token *toks, int *ntokens, int last_exit_status) {
                 for (size_t j = 0; j < g.gl_pathc; j++) {
                     new_toks[new_index].type = TOK_WORD;
                     new_toks[new_index].value = strdup(g.gl_pathv[j]);
-                    new_toks[new_index].quoted = 0;   /* ← ekle */
+                    new_toks[new_index].quoted = 0;
                     if (!new_toks[new_index].value) {
-                        // Bellek hatası durumunda kaynakları temizle
                         for (int k = 0; k < new_index; k++) {
                             free(new_toks[k].value);
                         }
@@ -802,10 +970,10 @@ Token *glob_expand_tokens(Token *toks, int *ntokens, int last_exit_status) {
                 }
                 globfree(&g);
             } else {
-                // Glob başarısız oldu, orijinal token'ı kopyala
+
                 new_toks[new_index].type = toks[i].type;
                 new_toks[new_index].value = strdup(toks[i].value);
-                new_toks[new_index].quoted = toks[i].quoted;  /* ← orijinalden kopyala */
+                new_toks[new_index].quoted = toks[i].quoted;
                 if (!new_toks[new_index].value) {
                     for (int k = 0; k < new_index; k++) {
                         free(new_toks[k].value);
@@ -816,7 +984,7 @@ Token *glob_expand_tokens(Token *toks, int *ntokens, int last_exit_status) {
                 new_index++;
             }
         } else {
-            // Diğer token'ları kopyala
+
             new_toks[new_index].type = toks[i].type;
             if (toks[i].value) {
                 new_toks[new_index].value = strdup(toks[i].value);
@@ -834,13 +1002,11 @@ Token *glob_expand_tokens(Token *toks, int *ntokens, int last_exit_status) {
             new_index++;
         }
     }
-    
-    // EOF token'ı ekle
+
     new_toks[new_index].type = TOK_EOF;
     new_toks[new_index].value = NULL;
     new_toks[new_index].quoted = 0;
     
-    // Eski token dizisini serbest bırak (değerleri değil)
     free(toks);
     
     *ntokens = expanded_count;

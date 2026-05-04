@@ -449,7 +449,7 @@ static int display_len_skip_ansi(const char *s) {
     int cols = 0;
     while (*s) {
         if (*s == '\033') {
-            /* ANSI escape — ] veya letter'a kadar atla */
+            /* ANSI escape — ] */
             s++;
             if (*s == '[') {
                 s++;
@@ -470,33 +470,25 @@ static int display_len_skip_ansi(const char *s) {
 
 static void ctr_render_prompt(const char *query, int qlen,
                                char **results, int rcount, int sel) {
-    /* Satırı tamamen temizle ve başa dön */
     write(STDOUT_FILENO, "\r\033[K", 4);
 
-    /* Prefix yaz — görüntü: "(search) " */
     const char *prefix = "(search) ";
     write(STDOUT_FILENO, "\033[2;37m", 7);
     write(STDOUT_FILENO, prefix, strlen(prefix));
     write(STDOUT_FILENO, "\033[0m", 4);
 
-    /* Sonucu yaz */
     if (results && rcount > 0 && sel < rcount) {
         write_highlighted(results[sel], query, qlen);
     }
 
-    /* Ayırıcı */
     write(STDOUT_FILENO, "  \033[2;37m>\033[0m  ", 16);
 
-    /* Query yaz — cursor burada kalacak */
     write(STDOUT_FILENO, "\033[1;36m", 7);
     write(STDOUT_FILENO, query, qlen);
     write(STDOUT_FILENO, "\033[0m", 4);
 
-    /* Satır sonunu temizle */
     write(STDOUT_FILENO, "\033[K", 3);
 
-    /* Cursor şu an query'nin sonunda
-       Geri almamıza gerek yok — query en sonda */
 }
 
 static void ctr_render_list(char **results, int *ids, int rcount,
@@ -581,23 +573,21 @@ static char *search_history_interactive(const char *prompt_str) {
 
         /* ESC sequence */
         if (c == 27) {
-            /* non-blocking ile sonraki byte'ı kontrol et */
             struct termios nb;
             tcgetattr(STDIN_FILENO, &nb);
             nb.c_cc[VMIN] = 0;
-            nb.c_cc[VTIME] = 1;  /* 100ms bekle */
+            nb.c_cc[VTIME] = 1;
             tcsetattr(STDIN_FILENO, TCSAFLUSH, &nb);
 
             char seq[2] = {0, 0};
             int n1 = read(STDIN_FILENO, &seq[0], 1);
 
-            /* raw mode'u geri al */
             nb.c_cc[VMIN] = 1;
             nb.c_cc[VTIME] = 0;
             tcsetattr(STDIN_FILENO, TCSAFLUSH, &nb);
 
             if (n1 <= 0 || seq[0] != '[') {
-                /* plain ESC — çık */
+                /* plain ESC */
                 ctr_clear_list(&list_rows);
                 write(STDOUT_FILENO, "\r", 1);
                 write(STDOUT_FILENO, "\033[K", 3);
@@ -606,7 +596,7 @@ static char *search_history_interactive(const char *prompt_str) {
                 return NULL;
             }
 
-            /* ESC [ sequence — ok tuşu */
+            /* ESC [ sequence */
             read(STDIN_FILENO, &seq[1], 1);
             if (seq[1] == 'A' && sel > 0) sel--;
             if (seq[1] == 'B' && sel < rcount-1) sel++;
@@ -693,7 +683,7 @@ static void render_with_suggestion(const char *prompt, const char *buf,
     
     render(prompt, buf, len, pos);
 
-    if (pos != len) return;  /* sadece cursor sondayken */
+    if (pos != len) return;
 
     char *sug = find_suggestion(buf, len);
     if (!sug) return;
@@ -708,7 +698,6 @@ static void render_with_suggestion(const char *prompt, const char *buf,
         write(STDOUT_FILENO, "\033[2;37m", 7);
         write(STDOUT_FILENO, ghost, strlen(ghost));
         write(STDOUT_FILENO, "\033[0m", 4);
-        /* imleci geri al */
         char esc[16];
         snprintf(esc, sizeof(esc), "\033[%dD", ghost_cols);
         write(STDOUT_FILENO, esc, strlen(esc));
@@ -733,13 +722,11 @@ static int common_prefix_len(glob_t *g) {
 
 char *read_line(const char *prompt) {
     struct termios orig_termios, raw;
-    
-    /* Terminal durumunu kaydet */
+
     if (tcgetattr(STDIN_FILENO, &orig_termios) == -1) {
         return NULL;
     }
-    
-    /* Raw moda geç */
+
     raw = orig_termios;
     raw.c_lflag &= ~(ICANON | ECHO | ISIG);
     raw.c_cc[VMIN] = 1;
@@ -777,7 +764,6 @@ char *read_line(const char *prompt) {
         
         /* TAB */
         if (c == '\t') {
-            /* 1. ghost suggestion varsa kabul et — HER ZAMAN önce */
             char *sug = find_suggestion(buf, len);
             if (sug) {
                 int sug_len = strlen(sug);
@@ -795,13 +781,11 @@ char *read_line(const char *prompt) {
                 free(sug);
             }
 
-            /* 2. panel yoksa — zil */
             if (panel_count == 0) {
                 write(STDOUT_FILENO, "\a", 1);
                 continue;
             }
 
-            /* 3. tek eşleşme — direkt tamamla */
             if (panel_count == 1 && panel_sel == -1) {
                 int ws = pos;
                 while (ws > 0 && buf[ws-1] != ' ') ws--;
@@ -821,7 +805,6 @@ char *read_line(const char *prompt) {
                 continue;
             }
 
-            /* 4. çok eşleşme — panele gir veya ilerle */
             if (panel_sel == -1) {
                 panel_sel = 0;
             } else {
@@ -1074,8 +1057,7 @@ char *read_line(const char *prompt) {
                         continue;
                     }
                 }
-                
-                /* Aşağı ok */
+
                 if (seq[1] == 'B') {
                     if (panel_sel == -1 && panel_count > 0 && hist_off == 0) {
                         panel_sel = 0;
@@ -1282,22 +1264,18 @@ char *read_heredoc(const char *delimiter, int expand) {
     int delim_len = strlen(delimiter);
 
     /* save and restore terminal — we need cooked mode for here-doc input */
-    struct termios orig;
-    int is_tty = isatty(STDIN_FILENO);
-    if (is_tty) {
-        tcgetattr(STDIN_FILENO, &orig);
-        struct termios cooked = orig;
-        cooked.c_lflag |= (ICANON | ECHO);
-        tcsetattr(STDIN_FILENO, TCSAFLUSH, &cooked);
-    }
 
+    /* heredoc reads Ctrl+C as EOF — no special handling needed
+       since we're in cooked mode, Ctrl+C sends SIGINT which
+       interrupts fgets and returns NULL */
+    /* show continuation prompt */
+    write(STDOUT_FILENO, "> ", 2);
     while (1) {
-        if (is_tty) {
-            /* show continuation prompt */
-            write(STDOUT_FILENO, "> ", 2);
-        }
 
-        if (!fgets(line, sizeof(line), stdin)) break;
+        if (!fgets(line, sizeof(line), stdin)) {
+            /* EOF or error — treat as if delimiter was found */
+            break;
+        }
 
         /* strip trailing newline for comparison */
         int line_len = strlen(line);
@@ -1312,6 +1290,9 @@ char *read_heredoc(const char *delimiter, int expand) {
             break;
         }
 
+        /* after the delimiter check, before appending: */
+        write(STDOUT_FILENO, "> ", 2);
+
         /* append line + newline to buf */
         size_t needed = buf_len + line_len + 2; /* +2 for \n and \0 */
         if (needed > buf_cap) {
@@ -1325,10 +1306,7 @@ char *read_heredoc(const char *delimiter, int expand) {
         buf[buf_len++] = '\n';
         buf[buf_len] = '\0';
     }
-
-    if (is_tty) {
-        tcsetattr(STDIN_FILENO, TCSAFLUSH, &orig);
-    }
+    
 
     return buf;  /* may be NULL on alloc failure */
 }

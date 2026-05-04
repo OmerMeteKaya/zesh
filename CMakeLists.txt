@@ -31,4 +31,5 @@ add_executable(shell
         src/completions.c
         include/config.h
         src/config.c
-        include/security.h)
+        include/security.h
+        include/signals.h)

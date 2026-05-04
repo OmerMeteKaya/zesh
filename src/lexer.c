@@ -92,26 +92,40 @@ Token *lex(const char *input, int *ntokens) {
                     p += 2;
                     /* skip whitespace */
                     while (*p == ' ' || *p == '\t') p++;
-                    
+
                     int noexp = 0;
                     /* check for quoted delimiter */
                     if (*p == '\'' || *p == '"') {
                         noexp = 1;
                         p++; /* skip opening quote */
                     }
-                    
+
                     /* read delimiter word */
                     const char *delim_start = p;
                     while (*p && !isspace(*p) && *p != '\'' && *p != '"') p++;
-                    
+
                     char *delim = strndup(delim_start, p - delim_start);
                     if (!delim) return NULL;
-                    
+
                     /* skip closing quote if present */
                     if (*p == '\'' || *p == '"') p++;
-                    
+
                     TokenType htype = noexp ? TOK_HEREDOC_NOEXP : TOK_HEREDOC;
                     if (!add_token(&tokens, &count, &capacity, htype, delim))
+                        return NULL;
+                    continue;
+                } else if (*(p+1) == '(') {
+                    const char *ps_start = p;
+                    p += 2;  /* skip <( */
+                    int depth = 1;
+                    while (*p && depth > 0) {
+                        if (*p == '(') depth++;
+                        else if (*p == ')') depth--;
+                        p++;
+                    }
+                    char *value = strdup_range(ps_start, p);
+                    if (!value) { tokens_free(tokens, count); return NULL; }
+                    if (!add_token(&tokens, &count, &capacity, TOK_WORD, value))
                         return NULL;
                     continue;
                 } else {
@@ -124,11 +138,27 @@ Token *lex(const char *input, int *ntokens) {
                 if (*(p+1) == '>') {
                     if (!add_token(&tokens, &count, &capacity, TOK_REDIR_APP, NULL)) return NULL;
                     p += 2;
+                } else if (*(p+1) == '(') {
+                    /* process substitution >(...) */
+                    const char *ps_start = p;
+                    p += 2;
+                    int depth = 1;
+                    while (*p && depth > 0) {
+                        if (*p == '(') depth++;
+                        else if (*p == ')') depth--;
+                        p++;
+                    }
+                    char *value = strdup_range(ps_start, p);
+                    if (!value) { tokens_free(tokens, count); return NULL; }
+                    if (!add_token(&tokens, &count, &capacity, TOK_WORD, value))
+                        return NULL;
+                    continue;
                 } else {
-                    if (!add_token(&tokens, &count, &capacity, TOK_REDIR_OUT, NULL)) return NULL;
+                    if (!add_token(&tokens, &count, &capacity, TOK_REDIR_OUT, NULL))
+                        return NULL;
                     p++;
+                    continue;
                 }
-                continue;
         }
 
         // Quoted strings

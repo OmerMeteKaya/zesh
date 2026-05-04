@@ -5,6 +5,7 @@
 #ifndef SHELL_H
 #define SHELL_H
 
+#include <sys/types.h>
 
 #define MAX_ARGS    64
 #define MAX_TOKENS  256
@@ -38,7 +39,8 @@ typedef struct {
     char  *outfile;
     int    append;
     char  *heredoc_content;
-    int    heredoc_expand;  /* 1=expand vars, 0=literal */
+    int    heredoc_expand;
+    char*  heredoc_delim;/* 1=expand vars, 0=literal */
 } Command;
 
 typedef struct {
@@ -76,6 +78,7 @@ CmdList *parse_list(Token *toks, int ntokens);
 /* executor.c */
 int execute(Pipeline *p);
 int execute_list(CmdList *list);
+int execute_list_in_subshell(CmdList *list);
 void cmdlist_free(CmdList *list);
 
 /* builtins.c */
@@ -88,5 +91,15 @@ void  expand_tokens(Token *toks, int ntokens, int last_exit_status);
 Token *glob_expand_tokens(Token *toks, int *ntokens, int last_exit_status);
 Token *brace_expand_tokens(Token *toks, int *ntokens);
 Token *word_split_tokens(Token *toks, int ntokens, int *new_count);
+char *expand_process_substitution(const char *cmd_str, int write_mode);
+void ps_fds_close(void);
+void ps_pids_wait(void);
+int  ps_pid_forget(pid_t pid);
+
+/* signals.c */
+void signals_child(void);
+
+/* here-doc */
+void fill_heredocs(CmdList *list);
 
 #endif //SHELL_H

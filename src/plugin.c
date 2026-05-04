@@ -1,3 +1,7 @@
+//
+// Created by mete on 29.04.2026.
+//
+
 #include "../include/plugin.h"
 #include <dlfcn.h>
 #include <dirent.h>
