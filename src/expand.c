@@ -296,7 +296,7 @@ static long ae_expr(AEval *a) {
     return v;
 }
 
-static char *eval_arithmetic(const char *expr) {
+char *eval_arithmetic(const char *expr) {
 
     char expanded[1024] = {0};
     const char *p = expr;
@@ -1006,7 +1006,7 @@ Token *glob_expand_tokens(Token *toks, int *ntokens, int last_exit_status) {
     new_toks[new_index].type = TOK_EOF;
     new_toks[new_index].value = NULL;
     new_toks[new_index].quoted = 0;
-    
+
     free(toks);
     
     *ntokens = expanded_count;

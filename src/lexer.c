@@ -86,6 +86,61 @@ Token *lex(const char *input, int *ntokens) {
                 if (!add_token(&tokens, &count, &capacity, TOK_SEMI, NULL)) return NULL;
                 p++;
                 continue;
+            case '[':
+                if (*(p+1) == '[') {
+                    if (!add_token(&tokens, &count, &capacity,
+                                   TOK_DOUBLE_LBRACKET, NULL)) return NULL;
+                    p += 2;
+                } else {
+                    char *v = strdup("[");
+                    if (!v) return NULL;
+                    if (!add_token(&tokens, &count, &capacity, TOK_WORD, v))
+                        return NULL;
+                    p++;
+                }
+                continue;
+
+            case ']':
+                if (*(p+1) == ']') {
+                    if (!add_token(&tokens, &count, &capacity,
+                                   TOK_DOUBLE_RBRACKET, NULL)) return NULL;
+                    p += 2;
+                } else {
+                    char *v = strdup("]");
+                    if (!v) return NULL;
+                    if (!add_token(&tokens, &count, &capacity, TOK_WORD, v))
+                        return NULL;
+                    p++;
+                }
+                continue;
+
+            case '(':
+                if (*(p+1) == '(') {
+                    if (!add_token(&tokens, &count, &capacity,
+                                   TOK_DOUBLE_LPAREN, NULL)) return NULL;
+                    p += 2;
+                } else {
+                    char *v = strdup("(");
+                    if (!v) return NULL;
+                    if (!add_token(&tokens, &count, &capacity, TOK_WORD, v))
+                        return NULL;
+                    p++;
+                }
+                continue;
+
+            case ')':
+                if (*(p+1) == ')') {
+                    if (!add_token(&tokens, &count, &capacity,
+                                   TOK_DOUBLE_RPAREN, NULL)) return NULL;
+                    p += 2;
+                } else {
+                    char *v = strdup(")");
+                    if (!v) return NULL;
+                    if (!add_token(&tokens, &count, &capacity, TOK_WORD, v))
+                        return NULL;
+                    p++;
+                }
+                continue;
             case '<':
                 if (*(p+1) == '<') {
                     /* here-doc: << DELIM or <<'DELIM' */
@@ -220,7 +275,7 @@ Token *lex(const char *input, int *ntokens) {
             }
             continue;
         }
-
+        word:
         // Words
         const char *start = p;
         /* handle $(...) as single unit — existing logic */

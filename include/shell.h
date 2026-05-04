@@ -23,7 +23,11 @@ typedef enum {
     TOK_OR,          /* || */
     TOK_SEMI,         /* ;  */
     TOK_HEREDOC,     /* << */
-    TOK_HEREDOC_NOEXP /* <<' (no expansion) */
+    TOK_HEREDOC_NOEXP, /* <<' (no expansion) */
+    TOK_DOUBLE_LBRACKET,  /* [[ */
+    TOK_DOUBLE_RBRACKET,  /* ]] */
+    TOK_DOUBLE_LPAREN,    /* (( */
+    TOK_DOUBLE_RPAREN,    /* )) */
 } TokenType;
 
 typedef struct {
@@ -95,6 +99,7 @@ char *expand_process_substitution(const char *cmd_str, int write_mode);
 void ps_fds_close(void);
 void ps_pids_wait(void);
 int  ps_pid_forget(pid_t pid);
+char *eval_arithmetic(const char *expr);
 
 /* signals.c */
 void signals_child(void);

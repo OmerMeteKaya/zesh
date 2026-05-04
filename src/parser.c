@@ -128,6 +128,61 @@ Pipeline *parse(Token *toks, int ntokens) {
                 current_cmd = &commands[cmd_count-1];
                 i++;
                 break;
+            case TOK_DOUBLE_LBRACKET: {
+                char *v = strdup("[[");
+                if (!v) goto error;
+                if (!add_arg(&argv, &argv_count, &argv_capacity, v)) goto error;
+                i++;
+                while (i < ntokens && toks[i].type != TOK_DOUBLE_RBRACKET
+                   && toks[i].type != TOK_EOF) {
+                    char *word;
+                    if (toks[i].type == TOK_AND)       word = strdup("&&");
+                    else if (toks[i].type == TOK_OR)   word = strdup("||");
+                    else if (toks[i].type == TOK_PIPE) word = strdup("|");
+                    else word = toks[i].value ? strdup(toks[i].value) : strdup("");
+                    if (!word) goto error;
+                    if (!add_arg(&argv, &argv_count, &argv_capacity, word)) goto error;
+                    i++;
+                   }
+                if (i < ntokens && toks[i].type == TOK_DOUBLE_RBRACKET)
+                    i++; /* skip ]] */
+                /* finalize command */
+                argv[argv_count] = NULL;
+                current_cmd->argv = argv;
+                current_cmd->argc = argv_count;
+                argv = NULL;
+                argv_count = 0;
+                break;
+            }
+
+            case TOK_DOUBLE_LPAREN: {
+                char *v = strdup("((");
+                if (!v) goto error;
+                if (!add_arg(&argv, &argv_count, &argv_capacity, v)) goto error;
+                i++;
+                while (i < ntokens && toks[i].type != TOK_DOUBLE_RPAREN
+                                   && toks[i].type != TOK_EOF) {
+                    char *word = toks[i].value ? strdup(toks[i].value)
+                                               : strdup("");
+                    if (!word) goto error;
+                    if (!add_arg(&argv, &argv_count, &argv_capacity, word))
+                        goto error;
+                    i++;
+                                   }
+                if (i < ntokens && toks[i].type == TOK_DOUBLE_RPAREN)
+                    i++; /* skip )) */
+                argv[argv_count] = NULL;
+                current_cmd->argv = argv;
+                current_cmd->argc = argv_count;
+                argv = NULL;
+                argv_count = 0;
+                break;
+            }
+
+            case TOK_DOUBLE_RBRACKET:
+            case TOK_DOUBLE_RPAREN:
+                i++;
+                break;
 
             case TOK_REDIR_IN:
                 i++;
@@ -297,55 +352,51 @@ void pipeline_free(Pipeline *p) {
 }
 
 CmdList *parse_list(Token *toks, int ntokens) {
-    if (!toks || ntokens <= 0) {
-        return NULL;
-    }
+    if (!toks || ntokens <= 0) return NULL;
 
     CmdList *list = malloc(sizeof(CmdList));
-    if (!list) {
-        return NULL;
-    }
+    if (!list) return NULL;
 
     list->nodes = malloc(4 * sizeof(CmdNode));
-    if (!list->nodes) {
-        free(list);
-        return NULL;
-    }
+    if (!list->nodes) { free(list); return NULL; }
 
     int capacity = 4;
     int count = 0;
     int segment_start = 0;
+    int depth_bracket = 0;  /* [[ nesting depth */
+    int depth_paren   = 0;  /* (( nesting depth */
 
     for (int i = 0; i <= ntokens; i++) {
         TokenType type = (i == ntokens) ? TOK_EOF : toks[i].type;
 
-        if (type == TOK_AND || type == TOK_OR || type == TOK_SEMI || type == TOK_EOF) {
-            // Segmenti ayrıştır
+        /* track [[ ]] depth */
+        if (type == TOK_DOUBLE_LBRACKET) depth_bracket++;
+        else if (type == TOK_DOUBLE_RBRACKET) depth_bracket--;
+        /* track (( )) depth */
+        else if (type == TOK_DOUBLE_LPAREN) depth_paren++;
+        else if (type == TOK_DOUBLE_RPAREN) depth_paren--;
+
+        /* only split on operators when not inside [[ ]] or (( )) */
+        if (depth_bracket > 0 || depth_paren > 0) continue;
+
+        if (type == TOK_AND || type == TOK_OR ||
+            type == TOK_SEMI || type == TOK_EOF) {
+
             Pipeline *pipeline = NULL;
             int segment_len = i - segment_start;
-            
-            if (segment_len > 0) {
-                pipeline = parse(toks + segment_start, segment_len);
-                // Boş segmentler için placeholder oluştur - sessizce devam et
-                if (!pipeline) {
-                    // Boş pipeline için NULL bırakılabilir
-                }
-            }
 
-            // CmdNode oluştur ve listeye ekle
+            if (segment_len > 0)
+                pipeline = parse(toks + segment_start, segment_len);
+
             if (count >= capacity) {
                 capacity *= 2;
-                CmdNode *tmp = realloc(list->nodes, capacity * sizeof(CmdNode));
+                CmdNode *tmp = realloc(list->nodes,
+                                       capacity * sizeof(CmdNode));
                 if (!tmp) {
-                    // Temizlik yap
-                    if (pipeline) {
-                        pipeline_free(pipeline);
-                    }
-                    for (int j = 0; j < count; j++) {
-                        if (list->nodes[j].pipeline) {
+                    if (pipeline) pipeline_free(pipeline);
+                    for (int j = 0; j < count; j++)
+                        if (list->nodes[j].pipeline)
                             pipeline_free(list->nodes[j].pipeline);
-                        }
-                    }
                     free(list->nodes);
                     free(list);
                     return NULL;
@@ -354,8 +405,8 @@ CmdList *parse_list(Token *toks, int ntokens) {
             }
 
             ListOp op = OP_NONE;
-            if (type == TOK_AND) op = OP_AND;
-            else if (type == TOK_OR) op = OP_OR;
+            if (type == TOK_AND)  op = OP_AND;
+            else if (type == TOK_OR)   op = OP_OR;
             else if (type == TOK_SEMI) op = OP_SEMI;
 
             list->nodes[count].pipeline = pipeline;
