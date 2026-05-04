@@ -101,10 +101,20 @@ void ps_pids_wait(void);
 int  ps_pid_forget(pid_t pid);
 char *eval_arithmetic(const char *expr);
 
+/* expand.c — local variables */
+void        local_var_set(const char *name, const char *value);
+const char *var_get(const char *name);
+
 /* signals.c */
 void signals_child(void);
 
 /* here-doc */
 void fill_heredocs(CmdList *list);
+
+/* arrays (expand.c) */
+void        arr_set(const char *name, int index, const char *value);
+const char *arr_get(const char *name, int index);
+int         arr_len(const char *name);
+void        arr_set_from_list(const char *name, char **vals, int count);
 
 #endif //SHELL_H

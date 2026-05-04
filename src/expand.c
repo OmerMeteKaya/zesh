@@ -14,12 +14,23 @@
 #include <sys/wait.h>
 #include <sys/stat.h>
 
+#define MAX_ARRAYS     64
+#define MAX_ARRAY_SIZE 256
+
+typedef struct {
+    char  name[64];
+    char *values[MAX_ARRAY_SIZE];
+    int   size;
+    int   active;
+} LocalArray;
+
+static LocalArray arrays[MAX_ARRAYS];
+
 
 static pid_t ps_pids[32];
 static int   ps_pid_count = 0;
 static int   ps_fds[8];
 static int   ps_fd_count = 0;
-static int   ps_counter = 0;
 
 void ps_pid_register(pid_t pid) {
     if (ps_pid_count < 32) {
@@ -92,6 +103,66 @@ typedef struct {
 
 static LocalVar local_vars[MAX_LOCAL_VARS];
 static int local_var_count = 0;
+
+static LocalArray arrays[MAX_ARRAYS];
+
+void arr_set(const char *name, int index, const char *value) {
+    if (index < 0 || index >= MAX_ARRAY_SIZE) return;
+    /* find existing */
+    for (int i = 0; i < MAX_ARRAYS; i++) {
+        if (arrays[i].active && strcmp(arrays[i].name, name) == 0) {
+            free(arrays[i].values[index]);
+            arrays[i].values[index] = value ? strdup(value) : NULL;
+            if (index >= arrays[i].size) arrays[i].size = index + 1;
+            return;
+        }
+    }
+    /* create new */
+    for (int i = 0; i < MAX_ARRAYS; i++) {
+        if (!arrays[i].active) {
+            memset(&arrays[i], 0, sizeof(LocalArray));
+            strncpy(arrays[i].name, name, sizeof(arrays[i].name)-1);
+            arrays[i].values[index] = value ? strdup(value) : NULL;
+            arrays[i].size = index + 1;
+            arrays[i].active = 1;
+            return;
+        }
+    }
+}
+
+const char *arr_get(const char *name, int index) {
+    if (index < 0 || index >= MAX_ARRAY_SIZE) return NULL;
+    for (int i = 0; i < MAX_ARRAYS; i++) {
+        if (arrays[i].active && strcmp(arrays[i].name, name) == 0) {
+            if (index < arrays[i].size)
+                return arrays[i].values[index];
+            return NULL;
+        }
+    }
+    return NULL;
+}
+
+int arr_len(const char *name) {
+    for (int i = 0; i < MAX_ARRAYS; i++) {
+        if (arrays[i].active && strcmp(arrays[i].name, name) == 0)
+            return arrays[i].size;
+    }
+    return 0;
+}
+
+void arr_set_from_list(const char *name, char **vals, int count) {
+    /* clear existing */
+    for (int i = 0; i < MAX_ARRAYS; i++) {
+        if (arrays[i].active && strcmp(arrays[i].name, name) == 0) {
+            for (int j = 0; j < arrays[i].size; j++)
+                free(arrays[i].values[j]);
+            memset(&arrays[i], 0, sizeof(LocalArray));
+            break;
+        }
+    }
+    for (int i = 0; i < count; i++)
+        arr_set(name, i, vals[i]);
+}
 
 char *expand_process_substitution(const char *cmd_str, int write_mode) {
     if (write_mode) {
@@ -817,30 +888,83 @@ char *expand_word(const char *word, int last_exit_status) {
             if (*p == '{') {
                 p++;
                 const char *var_start = p;
-                while (*p && *p != '}') p++;
-                
-                if (*p == '}') {
-                    size_t var_len = p - var_start;
-                    if (var_len > 0) {
-                        char *var_name = strndup(var_start, var_len);
-                        if (var_name) {
-                            const char *var_value = var_get(var_name);
-                            if (!var_value) var_value = "";
-                            
-                            if (append_str(&buf, &len, &capacity, var_value) < 0) {
-                                free(var_name);
-                                free(buf);
-                                return strdup(word);
-                            }
-                            free(var_name);
-                        }
-                    }
-                    p++;
-                    continue;
-                } else {
-                    // Malformed ${ - treat literally
-                    p = var_start - 1;
+
+                /* read var name — stop at }, [, # */
+                while (*p && *p != '}' && *p != '[') p++;
+
+                size_t var_len = p - var_start;
+                char var_name[64] = {0};
+                if (var_len > 0 && var_len < 64)
+                    strncpy(var_name, var_start, var_len);
+
+                /* ${#arr[@]} or ${#var} — length */
+                int get_length = 0;
+                if (var_name[0] == '#') {
+                    get_length = 1;
+                    memmove(var_name, var_name + 1, strlen(var_name));
                 }
+
+                /* array index: ${arr[N]} ${arr[@]} ${arr[*]} */
+                if (*p == '[') {
+                    p++;
+                    const char *idx_start = p;
+                    while (*p && *p != ']') p++;
+                    int idx_len = p - idx_start;
+                    char idx_buf[32] = {0};
+                    if (idx_len > 0 && idx_len < 32)
+                        strncpy(idx_buf, idx_start, idx_len);
+                    if (*p == ']') p++;
+                    if (*p == '}') p++;
+
+                    if (get_length) {
+                        if (strcmp(idx_buf, "@") == 0 || strcmp(idx_buf, "*") == 0) {
+                            /* ${#arr[@]} — element count */
+                            char nbuf[16];
+                            snprintf(nbuf, sizeof(nbuf), "%d", arr_len(var_name));
+                            append_str(&buf, &len, &capacity, nbuf);
+                        } else {
+                            /* ${#arr[0]} — length of single element */
+                            int idx = atoi(idx_buf);
+                            const char *v = arr_get(var_name, idx);
+                            char nbuf[16];
+                            snprintf(nbuf, sizeof(nbuf), "%zu", v ? strlen(v) : 0);
+                            append_str(&buf, &len, &capacity, nbuf);
+                        }
+                    } else if (strcmp(idx_buf, "@") == 0 ||
+                               strcmp(idx_buf, "*") == 0) {
+                        int alen = arr_len(var_name);
+                        for (int ai = 0; ai < alen; ai++) {
+                            const char *v = arr_get(var_name, ai);
+                            if (!v) v = "";
+                            if (ai > 0) append_str(&buf, &len, &capacity, " ");
+                            append_str(&buf, &len, &capacity, v);
+                        }
+                               } else {
+                                   int idx = atoi(idx_buf);
+                                   const char *v = arr_get(var_name, idx);
+                                   if (!v) v = "";
+                                   append_str(&buf, &len, &capacity, v);
+                               }
+                    continue;
+                }
+
+                /* plain ${VAR} or ${#VAR} */
+                if (*p == '}') {
+                    p++;
+                    if (get_length) {
+                        const char *v = var_get(var_name);
+                        char nbuf[16];
+                        (unsigned long)snprintf(nbuf, sizeof(nbuf), "%lu", v ? strlen(v) : 0);
+                        append_str(&buf, &len, &capacity, nbuf);
+                    } else {
+                        const char *var_value = var_get(var_name);
+                        if (!var_value) var_value = "";
+                        append_str(&buf, &len, &capacity, var_value);
+                    }
+                    continue;
+                }
+                /* malformed — treat literally */
+                p = var_start - 1;
             }
             
             // Handle "$VAR" - unbracketed variable

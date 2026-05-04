@@ -5,6 +5,8 @@
 #include <stdio.h>
 #include <sys/wait.h>
 #include <unistd.h>
+#include <signal.h>
+#include <sys/types.h>
 #include "../include/jobs.h"
 
 extern int ps_pid_forget(pid_t pid);

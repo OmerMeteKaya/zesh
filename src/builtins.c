@@ -12,6 +12,9 @@
 #include <sys/stat.h>
 #include <fnmatch.h>
 #include <regex.h>
+#include <stdlib.h>
+#include <sys/stat.h>
+#include <signal.h>
 #include "../include/jobs.h"
 #include "../include/alias.h"
 #include "../include/rc.h"

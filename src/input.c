@@ -1051,6 +1051,7 @@ char *read_line(const char *prompt) {
                         } else {
                             hist_off--;
                         }
+                        write(STDOUT_FILENO, "\r\033[K", 4);
                         panel_show_history(hist_off, &panel_rows);
                         render_with_suggestion(prompt, buf, len, pos);
 
@@ -1106,8 +1107,7 @@ char *read_line(const char *prompt) {
                         continue;
                     }
                 }
-                
-                /* Sağ ok */
+
                 if (seq[1] == 'C') {
                     if (panel_sel >= 0) {
                         int term_width = 80;
