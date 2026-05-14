@@ -113,7 +113,26 @@ Token *lex(const char *input, int *ntokens) {
                     p++;
                 }
                 continue;
+            case '{':
+                /* { tek başına keyword olarak word token */
+            {
+                char *v = strdup("{");
+                if (!v) return NULL;
+                if (!add_token(&tokens, &count, &capacity, TOK_WORD, v))
+                    return NULL;
+                p++;
+            }
+                continue;
 
+            case '}':
+            {
+                char *v = strdup("}");
+                if (!v) return NULL;
+                if (!add_token(&tokens, &count, &capacity, TOK_WORD, v))
+                    return NULL;
+                p++;
+            }
+                continue;
             case '(':
                 if (*(p+1) == '(') {
                     if (!add_token(&tokens, &count, &capacity,

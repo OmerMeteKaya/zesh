@@ -16,6 +16,7 @@
 
 #define MAX_ARRAYS     64
 #define MAX_ARRAY_SIZE 256
+#define MAX_FUNCS 64
 
 typedef struct {
     char  name[64];
@@ -32,6 +33,68 @@ static int   ps_pid_count = 0;
 static int   ps_fds[8];
 static int   ps_fd_count = 0;
 
+
+
+typedef struct {
+    char    *name;
+    CmdList *body;
+    int      active;
+} FuncEntry;
+
+static FuncEntry func_table[MAX_FUNCS];
+
+void func_define(const char *name, CmdList *body) {
+    for (int i = 0; i < MAX_FUNCS; i++) {
+        if (func_table[i].active &&
+            strcmp(func_table[i].name, name) == 0) {
+            cmdlist_free(func_table[i].body);
+            func_table[i].body = body;
+            return;
+            }
+    }
+    for (int i = 0; i < MAX_FUNCS; i++) {
+        if (!func_table[i].active) {
+            func_table[i].name   = strdup(name);
+            func_table[i].body   = body;
+            func_table[i].active = 1;
+            return;
+        }
+    }
+    fprintf(stderr, "mysh: function table full\n");
+}
+
+FuncDef *func_get(const char *name) {
+    for (int i = 0; i < MAX_FUNCS; i++) {
+        if (func_table[i].active &&
+            strcmp(func_table[i].name, name) == 0) {
+            static FuncDef fd;
+            fd.name = func_table[i].name;
+            fd.body = func_table[i].body;
+            return &fd;
+            }
+    }
+    return NULL;
+}
+CmdList *func_get_body(const char *name) {
+    for (int i = 0; i < MAX_FUNCS; i++) {
+        if (func_table[i].active &&
+            strcmp(func_table[i].name, name) == 0) {
+            CmdList *b = func_table[i].body;
+            return b;
+            }
+    }
+    return NULL;
+}
+
+void func_free_all(void) {
+    for (int i = 0; i < MAX_FUNCS; i++) {
+        if (func_table[i].active) {
+            free(func_table[i].name);
+            cmdlist_free(func_table[i].body);
+            func_table[i].active = 0;
+        }
+    }
+}
 void ps_pid_register(pid_t pid) {
     if (ps_pid_count < 32) {
         ps_pids[ps_pid_count++] = pid;
@@ -256,15 +319,35 @@ void local_var_set(const char *name, const char *value) {
         local_var_count++;
     }
 }
+/* positional parameters — $1 $2 ... $@ $* $# */
+#define MAX_POSITIONAL 64
+static char *positional_params[MAX_POSITIONAL];
+static int   positional_count = 0;
 
+void positional_set(char **args, int count) {
+    /* clear existing */
+    for (int i = 0; i < positional_count; i++) {
+        free(positional_params[i]);
+        positional_params[i] = NULL;
+    }
+    positional_count = count;
+    for (int i = 0; i < count && i < MAX_POSITIONAL; i++)
+        positional_params[i] = args[i] ? strdup(args[i]) : strdup("");
+}
+
+void positional_clear(void) {
+    positional_set(NULL, 0);
+}
 /* get variable — local first, then env */
 const char *var_get(const char *name) {
     for (int i = 0; i < local_var_count; i++) {
         if (local_vars[i].active &&
-            strcmp(local_vars[i].name, name) == 0)
+            strcmp(local_vars[i].name, name) == 0) {
             return local_vars[i].value;
+        }
     }
-    return getenv(name);
+    const char *env = getenv(name);
+    return env;
 }
 
 
@@ -788,47 +871,53 @@ char *expand_word(const char *word, int last_exit_status) {
             p++;
             continue;
         }
-        
+
         // Handle variable expansion
         if (*p == '$') {
             p++;
-            
-            // Handle "$?" - last exit status
-            if (*p == '?') {
-                char *status_str = itoa(last_exit_status);
-                if (!status_str) {
-                    if (append_str(&buf, &len, &capacity, "$?") < 0) {
-                        free(buf);
-                        return strdup(word);
-                    }
-                } else {
-                    if (append_str(&buf, &len, &capacity, status_str) < 0) {
-                        free(status_str);
-                        free(buf);
-                        return strdup(word);
-                    }
-                    free(status_str);
+
+            /* $1 $2 ... $9 */
+            if (*p >= '1' && *p <= '9') {
+                int idx = *p - '1';
+                p++;
+                const char *val = (idx < positional_count) ?
+                                   positional_params[idx] : "";
+                append_str(&buf, &len, &capacity, val);
+                continue;
+            }
+
+            /* $# */
+            if (*p == '#') {
+                p++;
+                char nbuf[16];
+                snprintf(nbuf, sizeof(nbuf), "%d", positional_count);
+                append_str(&buf, &len, &capacity, nbuf);
+                continue;
+            }
+
+            /* $@ $* */
+            if (*p == '@' || *p == '*') {
+                p++;
+                for (int pi = 0; pi < positional_count; pi++) {
+                    if (pi > 0) append_str(&buf, &len, &capacity, " ");
+                    append_str(&buf, &len, &capacity,
+                               positional_params[pi] ? positional_params[pi] : "");
                 }
+                continue;
+            }
+
+            /* $? */
+            if (*p == '?') {
+                char *s = itoa(last_exit_status);
+                if (s) { append_str(&buf, &len, &capacity, s); free(s); }
                 p++;
                 continue;
             }
-            
-            // Handle "$$" - process ID
+
+            /* $$ */
             if (*p == '$') {
-                char *pid_str = itoa(getpid());
-                if (!pid_str) {
-                    if (append_str(&buf, &len, &capacity, "$$") < 0) {
-                        free(buf);
-                        return strdup(word);
-                    }
-                } else {
-                    if (append_str(&buf, &len, &capacity, pid_str) < 0) {
-                        free(pid_str);
-                        free(buf);
-                        return strdup(word);
-                    }
-                    free(pid_str);
-                }
+                char *s = itoa(getpid());
+                if (s) { append_str(&buf, &len, &capacity, s); free(s); }
                 p++;
                 continue;
             }

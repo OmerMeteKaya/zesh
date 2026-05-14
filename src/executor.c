@@ -9,14 +9,337 @@
 #include <stdlib.h>
 #include <string.h>
 #include <termios.h>
+#include <fnmatch.h>
 #include "../include/jobs.h"
 #include "../include/shell.h"
 
+int g_return_value = 0;
+int g_returning    = 0;
 extern void set_fg_pid(pid_t pid);
 extern int  last_exit_status;
+
+LoopControl g_loop_control = LOOP_NORMAL;
 static int g_in_procsubst = 0;
 
+static int execute_if(IfNode *node);
+static int execute_while(WhileNode *node);
+static int execute_for(ForNode *node);
+static int execute_list_expanded(CmdList *list);
+static int execute_case(CaseNode *node);
+static int execute_pipeline_expanded(Pipeline *p);
 
+static int execute_pipeline_expanded(Pipeline *p) {
+    if (!p) return 1;
+
+    if (p->ncommands == 1 &&
+        p->commands[0].argc == 1 &&
+        p->commands[0].argv &&
+        p->commands[0].argv[0]) {
+        char *arg = p->commands[0].argv[0];
+        char *eq  = strchr(arg, '=');
+        if (eq && eq != arg && strchr(arg, '[') == NULL) {
+            char name[64] = {0};
+            strncpy(name, arg, eq - arg);
+            char *expanded = expand_word(eq + 1, last_exit_status);
+            local_var_set(name, expanded ? expanded : eq + 1);
+            if (expanded) free(expanded);
+            last_exit_status = 0;
+            return 0;
+        }
+    }
+    Pipeline tmp;
+    tmp.background = p->background;
+    tmp.ncommands  = p->ncommands;
+    tmp.commands   = calloc(p->ncommands, sizeof(Command));
+    if (!tmp.commands) return 1;
+
+    for (int ci = 0; ci < p->ncommands; ci++) {
+        Command *src = &p->commands[ci];
+        Command *dst = &tmp.commands[ci];
+
+        dst->argc            = src->argc;
+        dst->append          = src->append;
+        dst->heredoc_expand  = src->heredoc_expand;
+        dst->heredoc_content = src->heredoc_content; /* shared */
+        dst->heredoc_delim   = src->heredoc_delim;   /* shared */
+
+        dst->argv = calloc(src->argc + 1, sizeof(char *));
+        if (!dst->argv) {
+            for (int k = 0; k < ci; k++) {
+                for (int ai = 0; ai < tmp.commands[k].argc; ai++)
+                    free(tmp.commands[k].argv[ai]);
+                free(tmp.commands[k].argv);
+                free(tmp.commands[k].infile);
+                free(tmp.commands[k].outfile);
+            }
+            free(tmp.commands);
+            return 1;
+        }
+        for (int ai = 0; ai < src->argc; ai++) {
+            if (!src->argv[ai]) { dst->argv[ai] = NULL; continue; }
+            char *ex = expand_word(src->argv[ai], last_exit_status);
+            dst->argv[ai] = ex ? ex : strdup(src->argv[ai]);
+        }
+        dst->argv[src->argc] = NULL;
+
+        dst->infile  = src->infile  ? expand_word(src->infile,  last_exit_status) : NULL;
+        dst->outfile = src->outfile ? expand_word(src->outfile, last_exit_status) : NULL;
+    }
+
+    #define TMP_FREE() do { \
+        for (int _ci = 0; _ci < tmp.ncommands; _ci++) { \
+            if (tmp.commands[_ci].argv) { \
+                for (int _ai = 0; _ai < tmp.commands[_ci].argc; _ai++) \
+                    free(tmp.commands[_ci].argv[_ai]); \
+                free(tmp.commands[_ci].argv); \
+            } \
+            free(tmp.commands[_ci].infile); \
+            free(tmp.commands[_ci].outfile); \
+        } \
+        free(tmp.commands); \
+    } while(0)
+
+    int status = 0;
+
+    if (tmp.ncommands == 0 || tmp.commands[0].argc == 0 ||
+        !tmp.commands[0].argv || !tmp.commands[0].argv[0]) {
+        TMP_FREE();
+        return 0;
+    }
+
+    CmdList *fbody = func_get_body(tmp.commands[0].argv[0]);
+    if (fbody) {
+        positional_set(tmp.commands[0].argv + 1,
+                       tmp.commands[0].argc - 1);
+        status = execute_list_expanded(fbody);
+        positional_clear();
+        g_returning = 0;
+        TMP_FREE();
+        return status;
+    }
+
+    /* builtin */
+    if (is_builtin(tmp.commands[0].argv[0])) {
+        Command *bcmd    = &tmp.commands[0];
+        int saved_stdout = -1, saved_stdin = -1;
+
+        if (bcmd->outfile) {
+            int flags = O_WRONLY | O_CREAT |
+                        (bcmd->append ? O_APPEND : O_TRUNC);
+            int fd = open(bcmd->outfile, flags, 0644);
+            if (fd >= 0) {
+                saved_stdout = dup(STDOUT_FILENO);
+                dup2(fd, STDOUT_FILENO);
+                close(fd);
+            }
+        }
+        if (bcmd->infile) {
+            int fd = open(bcmd->infile, O_RDONLY);
+            if (fd >= 0) {
+                saved_stdin = dup(STDIN_FILENO);
+                dup2(fd, STDIN_FILENO);
+                close(fd);
+            }
+        }
+
+        status = run_builtin(bcmd);
+
+        if (saved_stdout >= 0) {
+            fflush(stdout);
+            dup2(saved_stdout, STDOUT_FILENO);
+            close(saved_stdout);
+        }
+        if (saved_stdin >= 0) {
+            dup2(saved_stdin, STDIN_FILENO);
+            close(saved_stdin);
+        }
+        TMP_FREE();
+        return status;
+    }
+
+    /* external command */
+    status = execute(&tmp);
+    TMP_FREE();
+    return status;
+
+    #undef TMP_FREE
+}
+static int execute_list_expanded(CmdList *list) {
+    if (!list || list->count == 0) return 0;
+
+    int last_status = 0;
+
+    for (int i = 0; i < list->count; i++) {
+        CmdNode *node = &list->nodes[i];
+
+        if (i > 0) {
+            ListOp prev_op = list->nodes[i - 1].op;
+            if (prev_op == OP_AND && last_status != 0) continue;
+            if (prev_op == OP_OR  && last_status == 0) continue;
+        }
+
+        switch (node->type) {
+            case NODE_IF:
+                last_status = execute_if(node->if_node);
+                break;
+            case NODE_WHILE:
+                last_status = execute_while(node->while_node);
+                break;
+            case NODE_CASE:
+                last_status = execute_case(node->case_node);
+                break;
+            case NODE_FOR:
+                last_status = execute_for(node->for_node);
+                break;
+            case NODE_PIPELINE:
+            default:
+                if (node->pipeline)
+                    last_status = execute_pipeline_expanded(node->pipeline);
+                break;
+        }
+
+        last_exit_status = last_status;
+        if (g_loop_control != LOOP_NORMAL) return last_status;
+        if (g_returning) return g_return_value;
+    }
+
+    return last_status;
+}
+/* ------------------------------------------------------------------ */
+/*  execute_if                                                          */
+/* ------------------------------------------------------------------ */
+
+static int execute_if(IfNode *node) {
+    if (!node) return 1;
+
+    /* evaluate condition */
+    int cond = execute_list_expanded(node->condition);
+
+    if (cond == 0) {
+        /* condition true → run then_body */
+        if (node->then_body)
+            return execute_list_expanded(node->then_body);
+        return 0;
+    }
+
+    /* elif chain */
+    for (int i = 0; i < node->elif_count; i++) {
+        int elif_cond = execute_list_expanded(node->elif_conditions[i]);
+        if (elif_cond == 0) {
+            if (node->elif_bodies[i])
+                return execute_list_expanded(node->elif_bodies[i]);
+            return 0;
+        }
+    }
+
+    /* else */
+    if (node->else_body)
+        return execute_list_expanded(node->else_body);
+
+    return 1; /* no branch taken — exit status 1 like bash */
+}
+
+/* ------------------------------------------------------------------ */
+/*  execute_while                                                       */
+/* ------------------------------------------------------------------ */
+
+static int execute_while(WhileNode *node) {
+    if (!node) return 1;
+
+    int status = 0;
+
+    while (1) {
+        int cond = execute_list_expanded(node->condition);
+
+        /* while: run while cond == 0 */
+        /* until: run while cond != 0 */
+        if (node->is_until) {
+            if (cond == 0) break;
+        } else {
+            if (cond != 0) break;
+        }
+
+        if (node->body)
+            status = execute_list_expanded(node->body);
+        if (g_loop_control == LOOP_BREAK) {
+            g_loop_control = LOOP_NORMAL;
+            break;
+        }
+        if (g_loop_control == LOOP_CONTINUE) {
+            g_loop_control = LOOP_NORMAL;
+            continue;
+        }
+    }
+
+    return status;
+}
+static int execute_case(CaseNode *node) {
+
+    if (!node) return 1;
+
+    char *word = expand_word(node->word, last_exit_status);
+    if (!word) word = strdup(node->word);
+
+    int status = 0;
+    for (int i = 0; i < node->nitem; i++) {
+        char *pattern = expand_word(node->items[i].pattern,
+                                     last_exit_status);
+        if (!pattern) pattern = strdup(node->items[i].pattern);
+
+        /* glob match */
+        int match = (fnmatch(pattern, word, 0) == 0);
+
+        if (strcmp(pattern, "*") == 0) match = 1;
+
+        free(pattern);
+
+        if (match) {
+            if (node->items[i].body)
+                status = execute_list_expanded(node->items[i].body);
+            free(word);
+            return status;
+        }
+    }
+
+    free(word);
+    return 0;
+}
+/* ------------------------------------------------------------------ */
+/*  execute_for                                                         */
+/* ------------------------------------------------------------------ */
+
+static int execute_for(ForNode *node) {
+    if (!node) return 1;
+
+    int status = 0;
+
+    /* if no word list given → iterate over "$@" (positional params) */
+    /* MVP: just iterate over node->words */
+    if (node->nwords == 0) return 0;
+
+    for (int i = 0; i < node->nwords; i++) {
+        /* expand the word before assigning */
+        char *expanded = expand_word(node->words[i], last_exit_status);
+        const char *val = expanded ? expanded : node->words[i];
+
+        /* set loop variable */
+        local_var_set(node->var, val);
+        if (expanded) free(expanded);
+
+        if (node->body)
+            status = execute_list_expanded(node->body);
+        if (g_loop_control == LOOP_BREAK) {
+            g_loop_control = LOOP_NORMAL;
+            break;
+        }
+        if (g_loop_control == LOOP_CONTINUE) {
+            g_loop_control = LOOP_NORMAL;
+            continue;
+        }
+    }
+
+    return status;
+}
 
 int execute_list_in_subshell(CmdList *list) {
     /*
@@ -46,6 +369,10 @@ int execute_list_in_subshell(CmdList *list) {
     return last_status;
 }
 
+/* ------------------------------------------------------------------ */
+/*                         execute_list                               */
+/* ------------------------------------------------------------------ */
+
 int execute_list(CmdList *list) {
     if (!list || list->count == 0) return 0;
 
@@ -53,82 +380,123 @@ int execute_list(CmdList *list) {
 
     for (int i = 0; i < list->count; i++) {
         CmdNode *node = &list->nodes[i];
-        if (!node->pipeline) continue;
 
-        /* Decide whether to run this pipeline based on previous status */
-        /* First node always runs */
+        /* --- && / || short-circuit --- */
         if (i > 0) {
-            ListOp prev_op = list->nodes[i-1].op;
-            if (prev_op == OP_AND && last_status != 0) continue; /* skip */
-            if (prev_op == OP_OR  && last_status == 0) continue; /* skip */
-            /* OP_SEMI and OP_NONE: always run */
+            ListOp prev_op = list->nodes[i - 1].op;
+            if (prev_op == OP_AND && last_status != 0) continue;
+            if (prev_op == OP_OR  && last_status == 0) continue;
         }
 
-        /* Check if first command is builtin */
-        Pipeline *p = node->pipeline;
-        if (p->ncommands > 0 &&
-            p->commands[0].argc > 0 &&
-            is_builtin(p->commands[0].argv[0])) {
+        /* --- dispatch on node type --- */
+        switch (node->type) {
+            case NODE_FUNC:
+                last_status = 0;
+                break;
+        case NODE_IF:
+            last_status = execute_if(node->if_node);
+            break;
 
-            Command *bcmd = &p->commands[0];
-            int saved_stdout = -1;
-            int saved_stdin  = -1;
-            int out_fd = -1;
-            int in_fd  = -1;
+        case NODE_WHILE:
+            last_status = execute_while(node->while_node);
+            break;
+        case NODE_CASE:
+            last_status = execute_case(node->case_node);
+             break;
 
-            /* redirect stdout if outfile specified */
-            if (bcmd->outfile) {
-                int flags = O_WRONLY|O_CREAT|
-                            (bcmd->append ? O_APPEND : O_TRUNC);
-                out_fd = open(bcmd->outfile, flags, 0644);
-                if (out_fd >= 0) {
-                    saved_stdout = dup(STDOUT_FILENO);
-                    dup2(out_fd, STDOUT_FILENO);
-                    close(out_fd);
-                }
-            }
+        case NODE_FOR:
+            last_status = execute_for(node->for_node);
+            break;
 
-            /* redirect stdin if infile specified */
-            if (bcmd->infile) {
-                in_fd = open(bcmd->infile, O_RDONLY);
-                if (in_fd >= 0) {
-                    saved_stdin = dup(STDIN_FILENO);
-                    dup2(in_fd, STDIN_FILENO);
-                    close(in_fd);
-                }
-            }
+case NODE_PIPELINE:
+default: {
+    Pipeline *p = node->pipeline;
+    if (!p) { last_status = 0; break; }
 
-            last_status = run_builtin(bcmd);
+    if (p->ncommands == 0 || !p->commands[0].argv ||
+        !p->commands[0].argv[0]) { last_status = 0; break; }
 
-            /* restore stdout */
-            if (saved_stdout >= 0) {
-                fflush(stdout);
-                dup2(saved_stdout, STDOUT_FILENO);
-                close(saved_stdout);
-            }
-            /* restore stdin */
-            if (saved_stdin >= 0) {
-                dup2(saved_stdin, STDIN_FILENO);
-                close(saved_stdin);
-            }
-        } else {
-            last_status = execute(p);
+    /* inline assignment */
+    if (p->ncommands == 1 && p->commands[0].argc == 1) {
+        char *arg = p->commands[0].argv[0];
+        char *eq  = strchr(arg, '=');
+        if (eq && eq != arg && strchr(arg, '[') == NULL) {
+            char name[64] = {0};
+            strncpy(name, arg, eq - arg);
+            char *expanded = expand_word(eq + 1, last_exit_status);
+            local_var_set(name, expanded ? expanded : eq + 1);
+            if (expanded) free(expanded);
+            last_status = 0;
+            last_exit_status = 0;
+            break;
         }
-
-        /* Update global last_exit_status */
-        extern int last_exit_status;
-        last_exit_status = last_status;
     }
 
-    /* Close process substitution fds and reap their children */
-    extern void ps_fds_close(void);
-    extern void ps_pids_wait(void);
+    CmdList *fbody = func_get_body(p->commands[0].argv[0]);
+    if (fbody) {
+        positional_set(p->commands[0].argv + 1,
+                       p->commands[0].argc - 1);
+        last_status = execute_list_expanded(fbody);
+        positional_clear();
+        g_returning = 0;
+        last_exit_status = last_status;
+        break;
+    }
+
+    /* builtin */
+    if (is_builtin(p->commands[0].argv[0])) {
+        Command *bcmd    = &p->commands[0];
+        int saved_stdout = -1, saved_stdin = -1;
+
+        if (bcmd->outfile) {
+            int flags = O_WRONLY | O_CREAT |
+                        (bcmd->append ? O_APPEND : O_TRUNC);
+            int fd = open(bcmd->outfile, flags, 0644);
+            if (fd >= 0) {
+                saved_stdout = dup(STDOUT_FILENO);
+                dup2(fd, STDOUT_FILENO);
+                close(fd);
+            }
+        }
+        if (bcmd->infile) {
+            int fd = open(bcmd->infile, O_RDONLY);
+            if (fd >= 0) {
+                saved_stdin = dup(STDIN_FILENO);
+                dup2(fd, STDIN_FILENO);
+                close(fd);
+            }
+        }
+
+        last_status = run_builtin(bcmd);
+
+        if (saved_stdout >= 0) {
+            fflush(stdout);
+            dup2(saved_stdout, STDOUT_FILENO);
+            close(saved_stdout);
+        }
+        if (saved_stdin >= 0) {
+            dup2(saved_stdin, STDIN_FILENO);
+            close(saved_stdin);
+        }
+        break;
+    }
+
+    /* external */
+    last_status = execute(p);
+    break;
+}
+        } /* switch */
+
+        last_exit_status = last_status;
+        if (g_loop_control != LOOP_NORMAL) return last_status;
+        if (g_returning) return g_return_value;
+    }
+
     ps_fds_close();
     ps_pids_wait();
 
     return last_status;
 }
-
 int execute(Pipeline *p) {
     if (!p || p->ncommands == 0) {
         return -1;

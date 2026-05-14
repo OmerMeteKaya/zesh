@@ -52,7 +52,9 @@ static void echo_print_escaped(const char *s) {
 
 int is_builtin(const char *cmd) {
     if (!cmd) return 0;
-    
+    if (strcmp(cmd, "break")    == 0) return 1;
+    if (strcmp(cmd, "continue") == 0) return 1;
+    if (strcmp(cmd, "return") == 0) return 1;
     return (strcmp(cmd, "cd") == 0) || 
            (strcmp(cmd, "exit") == 0) || 
            (strcmp(cmd, "export") == 0) || 
@@ -71,6 +73,7 @@ int is_builtin(const char *cmd) {
            (strcmp(cmd, "((")   == 0) ||
            (strcmp(cmd, "test") == 0) ||
            (strcmp(cmd, "[")    == 0);
+
 }
 /* ===== POSIX test / [ implementation ===== */
 
@@ -285,7 +288,11 @@ int run_builtin(Command *cmd) {
     }
     
     const char *builtin_cmd = cmd->argv[0];
-    
+    if (strcmp(cmd->argv[0], "return") == 0) {
+        g_return_value = cmd->argc > 1 ? atoi(cmd->argv[1]) : 0;
+        g_returning    = 1;
+        return g_return_value;
+    }
     if (strcmp(builtin_cmd, "cd") == 0) {
         const char *path = getenv("HOME");
         if (cmd->argc > 1) {
@@ -601,6 +608,14 @@ int run_builtin(Command *cmd) {
         long val = atol(res);
         free(res);
         return (val != 0) ? 0 : 1;
+    }
+    if (strcmp(cmd->argv[0], "break") == 0) {
+        g_loop_control = LOOP_BREAK;
+        return 0;
+    }
+    if (strcmp(cmd->argv[0], "continue") == 0) {
+        g_loop_control = LOOP_CONTINUE;
+        return 0;
     }
     
     return 1; // Not a builtin command

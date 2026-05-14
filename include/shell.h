@@ -11,6 +11,12 @@
 #define MAX_TOKENS  256
 #define MAX_INPUT   4096
 
+typedef struct IfNode    IfNode;
+typedef struct WhileNode WhileNode;
+typedef struct ForNode   ForNode;
+typedef struct CmdNode   CmdNode;
+typedef struct CmdList   CmdList;
+
 typedef enum {
     TOK_EOF = 0,
     TOK_WORD,
@@ -59,17 +65,86 @@ typedef enum {
     OP_OR,     /* || */
     OP_SEMI    /* ;  */
 } ListOp;
-
+typedef enum {
+    NODE_PIPELINE,
+    NODE_IF,
+    NODE_WHILE,
+    NODE_FOR,
+    NODE_FUNC,
+    NODE_CASE,
+} NodeType;
 typedef struct {
+    char    *pattern;
+    CmdList *body;
+} CaseItem;
+
+struct CaseNode {
+    char      *word;
+    CaseItem  *items;
+    int        nitem;
+};
+typedef struct CaseNode CaseNode;
+struct CmdNode {
     Pipeline *pipeline;
     ListOp    op;
-} CmdNode;
+    NodeType type;
+    union {
+        IfNode   *if_node;
+        WhileNode *while_node;
+        ForNode   *for_node;
+        CaseNode  *case_node;
+    };
+};
 
-typedef struct {
+struct CmdList {
     CmdNode *nodes;
     int      count;
-} CmdList;
+};
 
+
+
+struct IfNode {
+    CmdList *condition;
+    CmdList *then_body;
+    CmdList *elif_conditions[16];
+    CmdList *elif_bodies[16];
+    int      elif_count;
+    CmdList *else_body;
+};
+
+struct WhileNode {
+    CmdList *condition;
+    CmdList *body;
+    int      is_until;
+};
+
+struct ForNode {
+    char    *var;
+    char   **words;
+    int      nwords;
+    CmdList *body;
+};
+
+/* functions */
+typedef struct {
+    char    *name;
+    CmdList *body;
+} FuncDef;
+
+void positional_set(char **args, int count);
+void positional_clear(void);
+void        func_define(const char *name, CmdList *body);
+FuncDef    *func_get(const char *name);
+void        func_free_all(void);
+CmdList *func_get_body(const char *name);
+/* loop control */
+typedef enum {
+    LOOP_NORMAL   = 0,
+    LOOP_BREAK    = 1,
+    LOOP_CONTINUE = 2,
+} LoopControl;
+
+extern LoopControl g_loop_control;
 /* lexer.c */
 Token    *lex(const char *input, int *ntokens);
 void      tokens_free(Token *toks, int n);
@@ -116,5 +191,9 @@ void        arr_set(const char *name, int index, const char *value);
 const char *arr_get(const char *name, int index);
 int         arr_len(const char *name);
 void        arr_set_from_list(const char *name, char **vals, int count);
+
+/* return control */
+extern int g_return_value;
+extern int g_returning;
 
 #endif //SHELL_H

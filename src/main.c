@@ -22,9 +22,139 @@ extern char *read_heredoc(const char *delimiter, int expand);
 #include "../include/config.h"
 #include "../include/security.h"
 
+
 void signals_init(void);
 void jobs_init(void);
+static int run_script_line(const char *input) {
+    if (!input || strlen(input) == 0) return 0;
 
+    /* scalar assignment */
+    {
+        const char *ri = input;
+        while (*ri && isspace((unsigned char)*ri)) ri++;
+        const char *name_start = ri;
+        while (*ri && (isalnum((unsigned char)*ri) || *ri == '_')) ri++;
+        if (*ri == '=' && *(ri+1) != '(' && ri > name_start &&
+    strchr(ri, '[') == NULL &&
+    strchr(input, ';') == NULL) {
+            /* name=value */
+            char name[64] = {0};
+            strncpy(name, name_start, ri - name_start);
+            ri++; /* skip = */
+            int ntmp;
+            Token *ttmp = lex(ri, &ntmp);
+            char *expanded = ttmp ? expand_word(ri, last_exit_status) : strdup(ri);
+            if (ttmp) tokens_free(ttmp, ntmp);
+            local_var_set(name, expanded ? expanded : ri);
+            free(expanded);
+            return 0;
+        }
+    }
+
+    /* arr=(a b c) */
+    {
+        const char *ri = input;
+        while (*ri && isspace((unsigned char)*ri)) ri++;
+        const char *name_start = ri;
+        while (*ri && (isalnum((unsigned char)*ri) || *ri == '_')) ri++;
+        if (*ri == '=' && *(ri+1) == '(' && ri > name_start) {
+            char aname[64] = {0};
+            strncpy(aname, name_start, ri - name_start);
+            const char *open  = ri + 2;
+            const char *close = strrchr(open, ')');
+            if (close) {
+                char content[MAX_INPUT] = {0};
+                strncpy(content, open, close - open);
+                char *elems[256];
+                int   ecount = 0;
+                char *tok2   = strtok(content, " \t\n");
+                while (tok2 && ecount < 256) {
+                    elems[ecount++] = tok2;
+                    tok2 = strtok(NULL, " \t\n");
+                }
+                arr_set_from_list(aname, elems, ecount);
+            }
+            return 0;
+        }
+    }
+
+    int ntokens;
+    Token *tokens = lex(input, &ntokens);
+    if (!tokens) return 1;
+
+    int has_compound = 0;
+    for (int ci = 0; ci < ntokens; ci++) {
+        if (tokens[ci].type == TOK_WORD && tokens[ci].value) {
+            const char *v = tokens[ci].value;
+            if (strcmp(v, "if")    == 0 || strcmp(v, "while") == 0 ||
+                strcmp(v, "until") == 0 || strcmp(v, "for")   == 0 || strcmp(v, "case") == 0) {
+                has_compound = 1;
+                break;
+                }
+            size_t vlen = strlen(v);
+            if (vlen >= 3 &&
+                v[vlen-2] == '(' && v[vlen-1] == ')') {
+                has_compound = 1;
+                break;
+                }
+            if (ci + 2 < ntokens &&
+                tokens[ci+1].value && strcmp(tokens[ci+1].value, "(") == 0 &&
+                tokens[ci+2].value && strcmp(tokens[ci+2].value, ")") == 0) {
+                has_compound = 1;
+                break;
+                }
+        }
+    }
+
+    if (!has_compound) {
+        tokens = brace_expand_tokens(tokens, &ntokens);
+        if (!tokens) return 1;
+        tokens = glob_expand_tokens(tokens, &ntokens, last_exit_status);
+        if (!tokens) return 1;
+        tokens = word_split_tokens(tokens, ntokens, &ntokens);
+        if (!tokens) return 1;
+    } else {
+        tokens = brace_expand_tokens(tokens, &ntokens);
+        if (!tokens) return 1;
+    }
+
+    /* alias expansion */
+    if (!has_compound &&
+        ntokens > 0 &&
+        tokens[0].type == TOK_WORD && tokens[0].value) {
+        char *expanded = alias_expand(tokens[0].value);
+        if (expanded) {
+            char combined[4096];
+            snprintf(combined, sizeof(combined), "%s", expanded);
+            for (int i = 1; i < ntokens - 1; i++) {
+                if (tokens[i].value) {
+                    strncat(combined, " ",
+                            sizeof(combined) - strlen(combined) - 1);
+                    strncat(combined, tokens[i].value,
+                            sizeof(combined) - strlen(combined) - 1);
+                }
+            }
+            tokens_free(tokens, ntokens);
+            tokens = lex(combined, &ntokens);
+            if (!tokens) return 1;
+            tokens = brace_expand_tokens(tokens, &ntokens);
+            if (!tokens) return 1;
+            tokens = glob_expand_tokens(tokens, &ntokens, last_exit_status);
+            if (!tokens) return 1;
+        }
+    }
+
+    CmdList *list = parse_list(tokens, ntokens);
+    int status = 0;
+    if (list) {
+        fill_heredocs(list);
+        status = execute_list(list);
+        cmdlist_free(list);
+    }
+
+    tokens_free(tokens, ntokens);
+    return status;
+}
 void fill_heredocs(CmdList *list) {
     if (!list) return;
     for (int i = 0; i < list->count; i++) {
@@ -41,7 +171,7 @@ void fill_heredocs(CmdList *list) {
     }
 }
 
-int main(void) {
+int main(int argc, char *argv[]) {
     signals_init();
     jobs_init();
 
@@ -88,16 +218,117 @@ int main(void) {
     pid_t shell_pgid = getpid();
     setpgid(shell_pgid, shell_pgid);
     tcsetpgrp(STDIN_FILENO, shell_pgid);
+    if (argc >= 2) {
+        FILE *f = fopen(argv[1], "r");
+        if (!f) {
+            fprintf(stderr, "mysh: %s: cannot open file\n", argv[1]);
+            return 1;
+        }
 
-    /* ------------------------------------------------------------------ */
-    /*  REPL                                                                */
-    /* ------------------------------------------------------------------ */
+        char line[MAX_INPUT];
+        char collected[65536] = {0};
+        int  collecting = 0;
+        int  depth      = 0;
+        int  exit_status = 0;
+
+        while (fgets(line, sizeof(line), f)) {
+            char *p = line;
+            while (*p == ' ' || *p == '\t') p++;
+            if (*p == '#' || *p == '\n' || *p == '\0') continue;
+
+            line[strcspn(line, "\n")] = '\0';
+
+            {
+                const char *tr = line;
+                while (*tr == ' ' || *tr == '\t') tr++;
+                size_t tlen;
+
+                tlen = strlen("if");
+                if (strncmp(tr, "if", tlen) == 0 &&
+                    (tr[tlen]==' '||tr[tlen]=='\t'||
+                     tr[tlen]=='\0'||tr[tlen]=='\n')) depth++;
+
+                tlen = strlen("while");
+                if (strncmp(tr, "while", tlen) == 0 &&
+                    (tr[tlen]==' '||tr[tlen]=='\t'||
+                     tr[tlen]=='\0'||tr[tlen]=='\n')) depth++;
+
+                tlen = strlen("until");
+                if (strncmp(tr, "until", tlen) == 0 &&
+                    (tr[tlen]==' '||tr[tlen]=='\t'||
+                     tr[tlen]=='\0'||tr[tlen]=='\n')) depth++;
+
+                tlen = strlen("for");
+                if (strncmp(tr, "for", tlen) == 0 &&
+                    (tr[tlen]==' '||tr[tlen]=='\t'||
+                     tr[tlen]=='\0'||tr[tlen]=='\n')) depth++;
+
+                tlen = strlen("fi");
+                if (strncmp(tr, "fi", tlen) == 0 &&
+                    (tr[tlen]==' '||tr[tlen]=='\t'||
+                     tr[tlen]=='\0'||tr[tlen]=='\n')) depth--;
+
+                tlen = strlen("done");
+                if (strncmp(tr, "done", tlen) == 0 &&
+                    (tr[tlen]==' '||tr[tlen]=='\t'||
+                     tr[tlen]=='\0'||tr[tlen]=='\n')) depth--;
+
+                tlen = strlen("case");
+                if (strncmp(tr, "case", tlen) == 0 &&
+                    (tr[tlen]==' '||tr[tlen]=='\t'||
+                     tr[tlen]=='\0'||tr[tlen]=='\n')) depth++;
+
+                tlen = strlen("esac");
+                if (strncmp(tr, "esac", tlen) == 0 &&
+                    (tr[tlen]==' '||tr[tlen]=='\t'||
+                     tr[tlen]=='\0'||tr[tlen]=='\n')) depth--;
+                
+                {
+                    const char *tr2 = tr;
+                    while (*tr2 && (isalnum((unsigned char)*tr2) || *tr2 == '_')) tr2++;
+                    if (*tr2 == '(' && *(tr2+1) == ')') depth++;
+                }
+            }
+
+            if (!collecting && depth > 0) {
+                collecting = 1;
+                strncpy(collected, line, sizeof(collected) - 1);
+                strncat(collected, " ; ",
+                        sizeof(collected) - strlen(collected) - 1);
+                continue;
+            }
+
+            if (collecting) {
+                strncat(collected, line,
+                        sizeof(collected) - strlen(collected) - 1);
+                strncat(collected, " ; ",
+                        sizeof(collected) - strlen(collected) - 1);
+
+                if (depth <= 0) {
+                    collecting = 0;
+                    depth      = 0;
+                    exit_status = run_script_line(collected);
+                    memset(collected, 0, sizeof(collected));
+                }
+                continue;
+            }
+
+            exit_status = run_script_line(line);
+        }
+
+        fclose(f);
+        return exit_status;
+    }
+/* ---------------------------------------------------------------- */
+    /*  REPL                                                             */
+    /* ---------------------------------------------------------------- */
+    char line[MAX_INPUT];
     while (1) {
+       int from_block = 0;
         /* --- Build prompt --- */
         char prompt[512];
         char cwd[256];
-        home = getenv("HOME");  /* refresh each iteration */
-
+        home = getenv("HOME");
         if (getcwd(cwd, sizeof(cwd))) {
             char display[256];
             if (home && strcmp(cwd, home) == 0) {
@@ -148,11 +379,102 @@ int main(void) {
             snprintf(prompt, sizeof(prompt), "➜ mysh> ");
         }
 
-        /* --- Read input --- */
+        /* --- Read input (multiline collector) --- */
         char *input = read_line(prompt);
         if (!input) { printf("\n"); break; }
-
         input[strcspn(input, "\n")] = '\0';
+
+        /* block depth tracking */
+        static char   collected[65536];  /* max script block size    */
+        static int    collecting = 0;    /* currently inside a block */
+        static int    depth      = 0;    /* open block depth         */
+
+        /* helper: count keyword occurrences in a line */
+
+
+        /* update depth based on this line */
+        {
+           const char *tr = line;
+           while (*tr == ' ' || *tr == '\t') tr++;
+           size_t tlen;
+           tlen = strlen("if");
+           if (strncmp(tr, "if", tlen) == 0 &&
+               (tr[tlen] == ' ' || tr[tlen] == '\t' ||
+                tr[tlen] == '\0' || tr[tlen] == '\n')) depth++;
+
+           tlen = strlen("while");
+           if (strncmp(tr, "while", tlen) == 0 &&
+               (tr[tlen] == ' ' || tr[tlen] == '\t' ||
+                tr[tlen] == '\0' || tr[tlen] == '\n')) depth++;
+
+           tlen = strlen("until");
+           if (strncmp(tr, "until", tlen) == 0 &&
+               (tr[tlen] == ' ' || tr[tlen] == '\t' ||
+                tr[tlen] == '\0' || tr[tlen] == '\n')) depth++;
+
+           tlen = strlen("for");
+           if (strncmp(tr, "for", tlen) == 0 &&
+               (tr[tlen] == ' ' || tr[tlen] == '\t' ||
+                tr[tlen] == '\0' || tr[tlen] == '\n')) depth++;
+
+           tlen = strlen("fi");
+           if (strncmp(tr, "fi", tlen) == 0 &&
+               (tr[tlen] == ' ' || tr[tlen] == '\t' ||
+                tr[tlen] == '\0' || tr[tlen] == '\n')) depth--;
+
+           tlen = strlen("done");
+           if (strncmp(tr, "done", tlen) == 0 &&
+               (tr[tlen]==' '||tr[tlen]=='\t'||
+                tr[tlen]=='\0'||tr[tlen]=='\n')) depth--;
+
+           tlen = strlen("case");
+           if (strncmp(tr, "case", tlen) == 0 &&
+               (tr[tlen]==' '||tr[tlen]=='\t'||
+                tr[tlen]=='\0'||tr[tlen]=='\n')) depth++;
+
+           tlen = strlen("esac");
+           if (strncmp(tr, "esac", tlen) == 0 &&
+               (tr[tlen]==' '||tr[tlen]=='\t'||
+                tr[tlen]=='\0'||tr[tlen]=='\n')) depth--;
+           {
+               const char *tr2 = tr;
+               while (*tr2 && (isalnum((unsigned char)*tr2) || *tr2 == '_')) tr2++;
+               if (*tr2 == '(' && *(tr2+1) == ')') depth++;
+           }
+        }
+
+
+        if (!collecting && depth > 0) {
+            /* first line of a block — start collecting */
+            collecting = 1;
+            strncpy(collected, input, sizeof(collected) - 1);
+            strncat(collected, " ; ",
+                    sizeof(collected) - strlen(collected) - 1);
+            free(input);
+            continue;
+        }
+
+        if (collecting) {
+            strncat(collected, input,
+                    sizeof(collected) - strlen(collected) - 1);
+            strncat(collected, " ; ",
+                    sizeof(collected) - strlen(collected) - 1);
+            free(input);
+
+            if (depth <= 0) {
+                /* block complete — process collected string */
+                collecting = 0;
+                depth      = 0;
+                input      = strdup(collected);
+                memset(collected, 0, sizeof(collected));
+                from_block = 1;
+                /* fall through to normal processing below */
+            } else {
+                /* still inside block — keep collecting */
+                continue;
+            }
+        }
+
         if (strlen(input) == 0) { free(input); continue; }
 
         /* --- Lex --- */
@@ -166,74 +488,79 @@ int main(void) {
 
         int is_assignment = 0;
 
-        /* ---- 1. arr[N]=value — raw input, before any expansion ---- */
-        {
-            const char *ri = input;
-            while (*ri && isspace((unsigned char)*ri)) ri++;
-            const char *name_start = ri;
-            while (*ri && (isalnum((unsigned char)*ri) || *ri == '_')) ri++;
-            if (*ri == '[' && ri > name_start) {
-                const char *bracket_open = ri++;          /* skip '[' */
-                const char *idx_start    = ri;
-                while (*ri && isdigit((unsigned char)*ri)) ri++;
-                const char *idx_end = ri;
-                if (*ri == ']' && idx_end > idx_start) {
-                    ri++;                                  /* skip ']' */
-                    if (*ri == '=') {
-                        ri++;                             /* skip '=' */
-                        char aname[64]   = {0};
-                        char idx_buf[16] = {0};
-                        strncpy(aname,   name_start,   bracket_open - name_start);
-                        strncpy(idx_buf, idx_start,    idx_end - idx_start);
-                        arr_set(aname, atoi(idx_buf), ri);
+        /* ---- 1. arr[N]=value ---- */
+        if (!from_block) {
+            {
+                const char *ri = input;
+                while (*ri && isspace((unsigned char)*ri)) ri++;
+                const char *name_start = ri;
+                while (*ri && (isalnum((unsigned char)*ri) || *ri == '_')) ri++;
+                if (*ri == '[' && ri > name_start) {
+                    const char *bracket_open = ri++;
+                    const char *idx_start    = ri;
+                    while (*ri && isdigit((unsigned char)*ri)) ri++;
+                    const char *idx_end = ri;
+                    if (*ri == ']' && idx_end > idx_start) {
+                        ri++;
+                        if (*ri == '=') {
+                            ri++;
+                            char aname[64]   = {0};
+                            char idx_buf[16] = {0};
+                            strncpy(aname,   name_start,
+                                    bracket_open - name_start);
+                            strncpy(idx_buf, idx_start,
+                                    idx_end - idx_start);
+                            arr_set(aname, atoi(idx_buf), ri);
+                            is_assignment = 1;
+                        }
+                    }
+                }
+            }
+
+            /* ---- 2. arr=(a b c) ---- */
+            if (!is_assignment) {
+                const char *ri = input;
+                while (*ri && isspace((unsigned char)*ri)) ri++;
+                const char *name_start = ri;
+                while (*ri && (isalnum((unsigned char)*ri) || *ri == '_')) ri++;
+                if (*ri == '=' && *(ri + 1) == '(' && ri > name_start) {
+                    char aname[64] = {0};
+                    strncpy(aname, name_start, ri - name_start);
+                    const char *open  = ri + 2;
+                    const char *close = strrchr(open, ')');
+                    if (close) {
+                        char content[MAX_INPUT] = {0};
+                        strncpy(content, open, close - open);
+                        char *elems[256];
+                        int   ecount = 0;
+                        char *tok2   = strtok(content, " \t\n");
+                        while (tok2 && ecount < 256) {
+                            elems[ecount++] = tok2;
+                            tok2 = strtok(NULL, " \t\n");
+                        }
+                        arr_set_from_list(aname, elems, ecount);
                         is_assignment = 1;
                     }
                 }
             }
-        }
 
-        /* ---- 2. arr=(a b c) — raw input ---- */
-        if (!is_assignment) {
-            const char *ri = input;
-            while (*ri && isspace((unsigned char)*ri)) ri++;
-            const char *name_start = ri;
-            while (*ri && (isalnum((unsigned char)*ri) || *ri == '_')) ri++;
-            if (*ri == '=' && *(ri + 1) == '(' && ri > name_start) {
-                char aname[64] = {0};
-                strncpy(aname, name_start, ri - name_start);
-
-                const char *open  = ri + 2;               /* after =( */
-                const char *close = strrchr(open, ')');
-                if (close) {
-                    char content[MAX_INPUT] = {0};
-                    strncpy(content, open, close - open);
-
-                    char *elems[256];
-                    int   ecount = 0;
-                    char *tok2   = strtok(content, " \t\n");
-                    while (tok2 && ecount < 256) {
-                        elems[ecount++] = tok2;
-                        tok2 = strtok(NULL, " \t\n");
-                    }
-                    arr_set_from_list(aname, elems, ecount);
+            /* ---- 3. scalar KEY=VALUE ---- */
+            if (!is_assignment &&
+        tokens[0].type == TOK_WORD && tokens[0].value) {
+                char *eq = strchr(tokens[0].value, '=');
+                if (eq && eq != tokens[0].value &&
+                    strchr(tokens[0].value, '[') == NULL &&
+                    ntokens <= 2) {
+                    *eq = '\0';
+                    char *raw_val = eq + 1;
+                    /* arithmetic expand et */
+                    char *expanded_val = expand_word(raw_val, last_exit_status);
+                    local_var_set(tokens[0].value, expanded_val ? expanded_val : raw_val);
+                    if (expanded_val) free(expanded_val);
+                    *eq = '=';
                     is_assignment = 1;
-                }
-            }
+                    }
         }
-
-        /* ---- 3. scalar KEY=VALUE — token-based ---- */
-        if (!is_assignment &&
-            ntokens == 2 &&
-            tokens[0].type == TOK_WORD && tokens[0].value) {
-            char *eq = strchr(tokens[0].value, '=');
-            /* must have a name before '=' and must NOT be arr[N]= form */
-            if (eq && eq != tokens[0].value &&
-                strchr(tokens[0].value, '[') == NULL) {
-                *eq = '\0';
-                local_var_set(tokens[0].value, eq + 1);
-                *eq = '=';
-                is_assignment = 1;
-            }
         }
 
         if (is_assignment) {
@@ -242,37 +569,72 @@ int main(void) {
             continue;
         }
 
-        /* ---- Expansion pipeline (non-assignments only) ---- */
-        tokens = brace_expand_tokens(tokens, &ntokens);
-        if (!tokens) { free(input); continue; }
-        tokens = glob_expand_tokens(tokens, &ntokens, last_exit_status);
-        if (!tokens) { free(input); continue; }
-        tokens = word_split_tokens(tokens, ntokens, &ntokens);
-        if (!tokens) { free(input); continue; }
-
-        /* ---- Alias expansion + re-lex ---- */
-        if (ntokens > 0 &&
-            tokens[0].type == TOK_WORD && tokens[0].value) {
-            char *expanded = alias_expand(tokens[0].value);
-            if (expanded) {
-                char combined[4096];
-                snprintf(combined, sizeof(combined), "%s", expanded);
-                for (int i = 1; i < ntokens - 1; i++) {
-                    if (tokens[i].value) {
-                        strncat(combined, " ",
-                                sizeof(combined) - strlen(combined) - 1);
-                        strncat(combined, tokens[i].value,
-                                sizeof(combined) - strlen(combined) - 1);
+        /* ---- Expansion pipeline ---- */
+        int has_compound = 0;
+        for (int ci = 0; ci < ntokens; ci++) {
+            if (tokens[ci].type == TOK_WORD && tokens[ci].value) {
+                const char *v = tokens[ci].value;
+                if (strcmp(v, "if")    == 0 || strcmp(v, "while") == 0 ||
+                    strcmp(v, "until") == 0 || strcmp(v, "for")   == 0 || strcmp(v, "case") == 0) {
+                    has_compound = 1;
+                    break;
                     }
-                }
-                tokens_free(tokens, ntokens);
-                tokens = lex(combined, &ntokens);
-                if (!tokens) { free(input); continue; }
-                tokens = brace_expand_tokens(tokens, &ntokens);
-                if (!tokens) { free(input); continue; }
-                tokens = glob_expand_tokens(tokens, &ntokens, last_exit_status);
-                if (!tokens) { free(input); continue; }
+                size_t vlen = strlen(v);
+                if (vlen >= 3 &&
+                    v[vlen-2] == '(' && v[vlen-1] == ')') {
+                    has_compound = 1;
+                    break;
+                    }
+                if (ci + 2 < ntokens &&
+                    tokens[ci+1].value && strcmp(tokens[ci+1].value, "(") == 0 &&
+                    tokens[ci+2].value && strcmp(tokens[ci+2].value, ")") == 0) {
+                    has_compound = 1;
+                    break;
+                    }
             }
+        }
+
+        if (!has_compound) {
+            tokens = brace_expand_tokens(tokens, &ntokens);
+            if (!tokens) { free(input); continue; }
+            tokens = glob_expand_tokens(tokens, &ntokens, last_exit_status);
+            if (!tokens) { free(input); continue; }
+            tokens = word_split_tokens(tokens, ntokens, &ntokens);
+            if (!tokens) { free(input); continue; }
+        } else {
+            tokens = brace_expand_tokens(tokens, &ntokens);
+            if (!tokens) { free(input); continue; }
+        }
+
+        /* ---- Alias expansion ---- */
+        if (!has_compound &&
+    ntokens > 0 &&
+    tokens[0].type == TOK_WORD && tokens[0].value) {
+            char *expanded = alias_expand(tokens[0].value);
+            if (ntokens > 0 &&
+                tokens[0].type == TOK_WORD && tokens[0].value) {
+                char *expanded = alias_expand(tokens[0].value);
+                if (expanded) {
+                    char combined[4096];
+                    snprintf(combined, sizeof(combined), "%s", expanded);
+                    for (int i = 1; i < ntokens - 1; i++) {
+                        if (tokens[i].value) {
+                            strncat(combined, " ",
+                                    sizeof(combined) - strlen(combined) - 1);
+                            strncat(combined, tokens[i].value,
+                                    sizeof(combined) - strlen(combined) - 1);
+                        }
+                    }
+                    tokens_free(tokens, ntokens);
+                    tokens = lex(combined, &ntokens);
+                    if (!tokens) { free(input); continue; }
+                    tokens = brace_expand_tokens(tokens, &ntokens);
+                    if (!tokens) { free(input); continue; }
+                    tokens = glob_expand_tokens(tokens, &ntokens,
+                                                last_exit_status);
+                    if (!tokens) { free(input); continue; }
+                }
+                }
         }
 
         /* ---- Security check ---- */
@@ -281,7 +643,8 @@ int main(void) {
         int should_run = 1;
 
         if (sec_level == SEC_BLOCK) {
-            fprintf(stderr, "\033[1;31m⛔ Blocked:\033[0m %s\n", sec_reason);
+            fprintf(stderr,
+                "\033[1;31m⛔ Blocked:\033[0m %s\n", sec_reason);
             should_run = 0;
         } else if (sec_level == SEC_WARN) {
             fprintf(stderr,
@@ -306,7 +669,6 @@ int main(void) {
                 execute_list(list);
                 cmdlist_free(list);
 
-                /* restore raw mode after execution */
                 struct termios raw_restore;
                 tcgetattr(STDIN_FILENO, &raw_restore);
                 raw_restore.c_lflag &= ~(ICANON | ECHO | ISIG);
