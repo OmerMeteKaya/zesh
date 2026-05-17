@@ -229,7 +229,47 @@ void arr_set_from_list(const char *name, char **vals, int count) {
 
 char *expand_process_substitution(const char *cmd_str, int write_mode) {
     if (write_mode) {
-        return NULL;
+        int pipefd[2];
+        if (pipe(pipefd) < 0) return NULL;
+
+        pid_t pid = fork();
+        if (pid < 0) { close(pipefd[0]); close(pipefd[1]); return NULL; }
+
+        if (pid == 0) {
+            signals_child();
+            close(pipefd[1]);
+            dup2(pipefd[0], STDIN_FILENO);
+            close(pipefd[0]);
+
+            extern Token *lex(const char *input, int *ntokens);
+            extern CmdList *parse_list(Token *toks, int ntokens);
+            extern int execute_list_in_subshell(CmdList *list);
+            extern void cmdlist_free(CmdList *list);
+            extern void tokens_free(Token *toks, int n);
+            extern int last_exit_status;
+
+            int ntokens;
+            Token *toks = lex(cmd_str, &ntokens);
+            if (toks) {
+                CmdList *list = parse_list(toks, ntokens);
+                if (list) {
+                    execute_list_in_subshell(list);
+                    cmdlist_free(list);
+                }
+                tokens_free(toks, ntokens);
+            }
+            _exit(0);
+        }
+
+        /* parent */
+        close(pipefd[0]);
+        if (ps_fd_count < 8) ps_fds[ps_fd_count++] = pipefd[1];
+        ps_pid_register(pid);
+
+        char *result = malloc(32);
+        if (!result) { close(pipefd[1]); return NULL; }
+        snprintf(result, 32, "/dev/fd/%d", pipefd[1]);
+        return result;
     }
 
     int pipefd[2];
