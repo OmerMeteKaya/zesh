@@ -443,13 +443,27 @@ static long ae_expr(AEval *a) {
     long v = ae_term(a);
     while (1) {
         ae_skip_ws(a);
-        if (*a->p == '+') { a->p++; v += ae_term(a); }
+        if      (*a->p == '+') { a->p++; v += ae_term(a); }
         else if (*a->p == '-') { a->p++; v -= ae_term(a); }
         else break;
     }
     return v;
 }
 
+static long ae_compare(AEval *a) {
+    long v = ae_expr(a);
+    while (1) {
+        ae_skip_ws(a);
+        if (a->p[0]=='=' && a->p[1]=='=') { a->p+=2; v=(v == ae_expr(a)); }
+        else if (a->p[0]=='!' && a->p[1]=='=') { a->p+=2; v=(v != ae_expr(a)); }
+        else if (a->p[0]=='<' && a->p[1]=='=') { a->p+=2; v=(v <= ae_expr(a)); }
+        else if (a->p[0]=='>' && a->p[1]=='=') { a->p+=2; v=(v >= ae_expr(a)); }
+        else if (a->p[0]=='<' && a->p[1]!='<') { a->p++;  v=(v <  ae_expr(a)); }
+        else if (a->p[0]=='>' && a->p[1]!='>') { a->p++;  v=(v >  ae_expr(a)); }
+        else break;
+    }
+    return v;
+}
 char *eval_arithmetic(const char *expr) {
 
     char expanded[1024] = {0};
@@ -500,7 +514,7 @@ char *eval_arithmetic(const char *expr) {
     expanded[ei] = '\0';
 
     AEval a = { expanded, 0 };
-    long result = ae_expr(&a);
+    long result = ae_compare(&a);
     if (a.err) return strdup("0");
 
     char buf[32];

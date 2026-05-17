@@ -17,6 +17,8 @@ typedef struct ForNode   ForNode;
 typedef struct CmdNode   CmdNode;
 typedef struct CmdList   CmdList;
 
+extern volatile __sig_atomic_t g_sigint_received;
+
 typedef enum {
     TOK_EOF = 0,
     TOK_WORD,

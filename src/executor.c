@@ -245,10 +245,14 @@ static int execute_if(IfNode *node) {
 
 static int execute_while(WhileNode *node) {
     if (!node) return 1;
-
     int status = 0;
 
     while (1) {
+        if (g_sigint_received) {
+            g_sigint_received = 0;
+            return 130; /* 128 + SIGINT(2) */
+        }
+
         int cond = execute_list_expanded(node->condition);
 
         /* while: run while cond == 0 */
@@ -318,6 +322,10 @@ static int execute_for(ForNode *node) {
     if (node->nwords == 0) return 0;
 
     for (int i = 0; i < node->nwords; i++) {
+        if (g_sigint_received) {
+            g_sigint_received = 0;
+            return 130; /* 128 + SIGINT(2) */
+        }
         /* expand the word before assigning */
         char *expanded = expand_word(node->words[i], last_exit_status);
         const char *val = expanded ? expanded : node->words[i];

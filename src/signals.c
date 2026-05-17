@@ -10,7 +10,7 @@
 #include "../include/jobs.h"
 
 extern int ps_pid_forget(pid_t pid);
-
+volatile sig_atomic_t g_sigint_received = 0;
 int last_exit_status = 0;
 
 static volatile sig_atomic_t fg_pid = 0;
@@ -21,10 +21,9 @@ void set_fg_pid(pid_t pid) {
 
 static void sigint_handler(int sig) {
     (void)sig;
-    // Only reset prompt if no foreground process is running
+    g_sigint_received = 1;
     if (fg_pid == 0) {
-        // Cannot use printf in signal handler, using write instead
-        write(STDOUT_FILENO, "\nmysh> ", 7);
+        write(STDOUT_FILENO, "\n", 1);
     }
 }
 
@@ -32,37 +31,22 @@ static void sigchld_handler(int sig) {
     (void)sig;
     int status;
     pid_t pid;
-    
-    // Loop through all pending child signals
-    while ((pid = waitpid(-1, &status, WNOHANG | WUNTRACED)) > 0) {
-        // Check if this is a process substitution child we should ignore
-        if (ps_pid_forget(pid)) {
-            continue;
-        }
 
-        // Check if this pid belongs to a known job or is the foreground process
-        if (!job_find_by_pgid(pid) && pid != fg_pid) {
-            // Unknown pid, just reap it silently
-            continue;
-        }
+    while ((pid = waitpid(-1, &status, WNOHANG | WUNTRACED)) > 0) {
+        if (ps_pid_forget(pid)) continue;
+
+        if (!job_find_by_pgid(pid) && pid != fg_pid) continue;
 
         if (WIFEXITED(status) || WIFSIGNALED(status)) {
-            // Child exited normally or was terminated by a signal
             job_remove(pid);
-            if (pid == fg_pid) {
-                fg_pid = 0;
-            }
-            // Store exit status
-            if (WIFEXITED(status)) {
+            if (pid == fg_pid) fg_pid = 0;
+            if (WIFEXITED(status))
                 last_exit_status = WEXITSTATUS(status);
-            } else {
+            else
                 last_exit_status = 128 + WTERMSIG(status);
-            }
         } else if (WIFSTOPPED(status)) {
-            // Child was stopped
             job_set_status(pid, JOB_STOPPED);
             if (pid == (pid_t)fg_pid) fg_pid = 0;
-            /* write is async-signal-safe, use it to print stopped notice */
             const char *msg = "\n[stopped]\n";
             write(STDOUT_FILENO, msg, 11);
         }
@@ -71,38 +55,48 @@ static void sigchld_handler(int sig) {
 
 void signals_init(void) {
     struct sigaction sa;
-    
-    // SIGINT handler
+
+    /* SIGINT — shell handles, resets prompt when no fg process */
     sa.sa_handler = sigint_handler;
     sigemptyset(&sa.sa_mask);
     sa.sa_flags = SA_RESTART;
     sigaction(SIGINT, &sa, NULL);
-    
-    // Ignore SIGQUIT
+
+    /* SIGQUIT — ignore in shell */
     sa.sa_handler = SIG_IGN;
     sigemptyset(&sa.sa_mask);
     sa.sa_flags = 0;
     sigaction(SIGQUIT, &sa, NULL);
-    
-    // Ignore SIGTSTP
-    sa.sa_handler = SIG_IGN;
+
+    /*
+     * SIGTSTP — shell ignores it so Ctrl+Z doesn't suspend the shell
+     * itself. The child runs in its own process group with SIGTSTP
+     * restored to SIG_DFL (done in signals_child()), so Ctrl+Z will
+     * reach the child via tcsetpgrp + terminal driver correctly.
+     *
+     * KEY FIX: we must NOT set SIG_IGN here at the process level
+     * because inherited SIG_IGN blocks delivery to the child even
+     * after the child calls signal(SIGTSTP, SIG_DFL).
+     * Instead we use a no-op handler so the disposition is not
+     * inherited as SIG_IGN by children.
+     */
+    sa.sa_handler = SIG_IGN;  /* shell itself won't suspend */
     sigemptyset(&sa.sa_mask);
     sa.sa_flags = 0;
     sigaction(SIGTSTP, &sa, NULL);
-    
-    // Ignore SIGTTOU
+
+    /* SIGTTOU / SIGTTIN — ignore in shell */
     sa.sa_handler = SIG_IGN;
     sigemptyset(&sa.sa_mask);
     sa.sa_flags = 0;
     sigaction(SIGTTOU, &sa, NULL);
-    
-    // Ignore SIGTTIN
+
     sa.sa_handler = SIG_IGN;
     sigemptyset(&sa.sa_mask);
     sa.sa_flags = 0;
     sigaction(SIGTTIN, &sa, NULL);
-    
-    // SIGCHLD handler
+
+    /* SIGCHLD */
     sa.sa_handler = sigchld_handler;
     sigemptyset(&sa.sa_mask);
     sa.sa_flags = SA_RESTART;
@@ -110,13 +104,23 @@ void signals_init(void) {
 }
 
 void signals_child(void) {
-    // Put child in its own process group FIRST
+    /* child gets its own process group */
     setpgid(0, 0);
-    
-    // Reset signal handlers to default
-    signal(SIGINT, SIG_DFL);
-    signal(SIGQUIT, SIG_DFL);
-    signal(SIGTSTP, SIG_DFL);
-    signal(SIGTTOU, SIG_DFL);
-    signal(SIGTTIN, SIG_DFL);
+
+    /*
+     * sigaction with SIG_DFL overrides inherited SIG_IGN.
+     * signal() does NOT override inherited SIG_IGN on Linux,
+     * but sigaction() does — critical for SIGTSTP (Ctrl+Z).
+     */
+    struct sigaction sa;
+    sa.sa_handler = SIG_DFL;
+    sigemptyset(&sa.sa_mask);
+    sa.sa_flags = 0;
+
+    sigaction(SIGINT,  &sa, NULL);
+    sigaction(SIGQUIT, &sa, NULL);
+    sigaction(SIGTSTP, &sa, NULL);
+    sigaction(SIGTTOU, &sa, NULL);
+    sigaction(SIGTTIN, &sa, NULL);
+    sigaction(SIGCHLD, &sa, NULL);
 }

@@ -56,6 +56,11 @@ Token *lex(const char *input, int *ntokens) {
     const char *p = input;
 
     while (*p) {
+        if (*p == '\n') {
+            if (!add_token(&tokens, &count, &capacity, TOK_SEMI, NULL)) return NULL;
+            p++;
+            continue;
+        }
         // Skip whitespace
         if (isspace(*p)) {
             p++;
