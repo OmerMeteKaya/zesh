@@ -266,7 +266,7 @@ Token *lex(const char *input, int *ntokens) {
         }
 
         if (*p == '"') {
-            const char *start = ++p;
+            ++p;
             char *buffer = malloc(strlen(input) + 1);
             if (!buffer) {
                 tokens_free(tokens, count);
@@ -299,7 +299,6 @@ Token *lex(const char *input, int *ntokens) {
             }
             continue;
         }
-        word:
         // Words
         const char *start = p;
         /* handle $(...) as single unit — existing logic */

@@ -25,6 +25,15 @@ ShellConfig g_config = {
     .security_block     = 0,
     .security_audit     = 1,
     .security_audit_log = "~/.mysh/audit.log",
+    .hl_color_keyword  = "magenta",
+    .hl_color_string   = "green",
+    .hl_color_variable = "yellow",
+    .hl_color_comment  = "dim",
+    .hl_color_operator = "bold",
+    .hl_color_cmd_ok   = "green",
+    .hl_color_cmd_err  = "red",
+    .hl_color_path     = "cyan",
+    .hl_color_flag     = "yellow",
 };
 
 /* Helper: parse_bool */
@@ -96,7 +105,26 @@ void config_load(const char *path) {
             g_config.suggestion_enabled = parse_bool(val);
         else if (strcmp(key,"highlight_enabled")==0)
             g_config.highlight_enabled = parse_bool(val);
+        else if (strcmp(key,"hl_color_keyword")==0)
+            strncpy(g_config.hl_color_keyword, val, sizeof(g_config.hl_color_keyword)-1);
+        else if (strcmp(key,"hl_color_string")==0)
+            strncpy(g_config.hl_color_string, val, sizeof(g_config.hl_color_string)-1);
+        else if (strcmp(key,"hl_color_variable")==0)
+            strncpy(g_config.hl_color_variable, val, sizeof(g_config.hl_color_variable)-1);
+        else if (strcmp(key,"hl_color_comment")==0)
+            strncpy(g_config.hl_color_comment, val, sizeof(g_config.hl_color_comment)-1);
+        else if (strcmp(key,"hl_color_operator")==0)
+            strncpy(g_config.hl_color_operator, val, sizeof(g_config.hl_color_operator)-1);
+        else if (strcmp(key,"hl_color_cmd_ok")==0)
+            strncpy(g_config.hl_color_cmd_ok, val, sizeof(g_config.hl_color_cmd_ok)-1);
+        else if (strcmp(key,"hl_color_cmd_err")==0)
+            strncpy(g_config.hl_color_cmd_err, val, sizeof(g_config.hl_color_cmd_err)-1);
+        else if (strcmp(key,"hl_color_path")==0)
+            strncpy(g_config.hl_color_path, val, sizeof(g_config.hl_color_path)-1);
+        else if (strcmp(key,"hl_color_flag")==0)
+            strncpy(g_config.hl_color_flag, val, sizeof(g_config.hl_color_flag)-1);
     }
+
     fclose(f);
 }
 

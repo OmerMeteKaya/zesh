@@ -9,6 +9,8 @@
 #include <sys/types.h>
 #include "../include/jobs.h"
 
+#define _POSIX_C_SOURCE 200809L
+
 extern int ps_pid_forget(pid_t pid);
 volatile sig_atomic_t g_sigint_received = 0;
 int last_exit_status = 0;

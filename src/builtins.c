@@ -20,6 +20,12 @@
 #include "../include/rc.h"
 #include "../include/shell.h"
 
+extern void  cd_visit(const char *path);
+extern char *cd_frecency_top(const char *query);
+extern void history_close(void);
+extern void alias_free(void);
+extern void plugins_unload(void);
+
 static void restore_terminal(void) {
     struct termios t;
     tcgetattr(STDIN_FILENO, &t);
@@ -294,22 +300,106 @@ int run_builtin(Command *cmd) {
         return g_return_value;
     }
     if (strcmp(builtin_cmd, "cd") == 0) {
-        const char *path = getenv("HOME");
-        if (cmd->argc > 1) {
-            path = cmd->argv[1];
+        const char *target = NULL;
+
+        if (cmd->argc <= 1) {
+            /* bare `cd` → $HOME */
+            target = getenv("HOME");
+            if (!target) { fprintf(stderr, "cd: HOME not set\n"); return 1; }
+            if (chdir(target) != 0) { perror("cd"); return 1; }
+            cd_visit(target);
+            return 0;
         }
-        
-        if (chdir(path) != 0) {
-            perror("cd");
-            return 1;
+
+        const char *arg = cmd->argv[1];
+
+        /* `cd -` → previous directory */
+        if (strcmp(arg, "-") == 0) {
+            const char *oldpwd = getenv("OLDPWD");
+            if (!oldpwd) { fprintf(stderr, "cd: OLDPWD not set\n"); return 1; }
+            char prev[4096];
+            strncpy(prev, oldpwd, sizeof(prev)-1);
+            char cwd_now[4096];
+            if (getcwd(cwd_now, sizeof(cwd_now)))
+                setenv("OLDPWD", cwd_now, 1);
+            printf("%s\n", prev);
+            if (chdir(prev) != 0) { perror("cd"); return 1; }
+            setenv("PWD", prev, 1);
+            cd_visit(prev);
+            return 0;
         }
-        return 0;
-    }
-    
+
+        /* 1. Exact path — try directly */
+        {
+            char cwd_before[4096] = {0};
+            getcwd(cwd_before, sizeof(cwd_before));
+
+            if (chdir(arg) == 0) {
+                char cwd_after[4096];
+                if (getcwd(cwd_after, sizeof(cwd_after))) {
+                    if (*cwd_before) setenv("OLDPWD", cwd_before, 1);
+                    setenv("PWD", cwd_after, 1);
+                    cd_visit(cwd_after);
+                }
+                return 0;
+            }
+        }
+
+        /* 2. Frecency match — find best scoring dir containing `arg` */
+        {
+            char *best = cd_frecency_top(arg);
+            if (best) {
+                struct stat st;
+                int valid = (stat(best, &st) == 0 && S_ISDIR(st.st_mode));
+                if (valid) {
+                    char cwd_before[4096] = {0};
+                    getcwd(cwd_before, sizeof(cwd_before));
+                    if (chdir(best) == 0) {
+                        char cwd_after[4096];
+                        if (getcwd(cwd_after, sizeof(cwd_after))) {
+                            if (*cwd_before) setenv("OLDPWD", cwd_before, 1);
+                            setenv("PWD", cwd_after, 1);
+                            cd_visit(cwd_after);
+                            fprintf(stderr, "  \033[2;37m→ %s\033[0m\n", cwd_after);
+                        }
+                        free(best);
+                        return 0;
+                    }
+                }
+                free(best);
+            }
+        }
+
+        /* 3. Nothing matched */
+        fprintf(stderr, "cd: %s: no such file or directory\n", arg);
+        return 1;
+    //}
+    //return 0;
+}
+
     if (strcmp(builtin_cmd, "exit") == 0) {
-        restore_terminal();
-        exit(cmd->argc > 1 ? atoi(cmd->argv[1]) : 0);
+        int exit_code = (cmd->argc > 1) ? atoi(cmd->argv[1]) : 0;
+
+        /* raw mode → cooked */
+        struct termios cooked;
+        if (tcgetattr(STDIN_FILENO, &cooked) == 0) {
+            cooked.c_lflag |= (ICANON | ECHO | ISIG);
+            cooked.c_iflag |= ICRNL;
+            tcsetattr(STDIN_FILENO, TCSAFLUSH, &cooked);
+        }
+
+        /* terminal control'ü geri al */
+        tcsetpgrp(STDIN_FILENO, getpgrp());
+
+        /* temizlik */
+        history_close();
+        alias_free();
+        plugins_unload();
+
+        write(STDOUT_FILENO, "\r\n", 2);
+        _exit(exit_code);
     }
+
     
     if (strcmp(builtin_cmd, "export") == 0) {
         if (cmd->argc <= 1) {

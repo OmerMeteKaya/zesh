@@ -13,6 +13,9 @@
 #include <dirent.h>
 #include <ctype.h>
 #include "../include/input.h"
+
+#include <sys/stat.h>
+
 #include "../include/highlight.h"
 #include "../include/alias.h"
 #include "../include/completions.h"
@@ -576,6 +579,10 @@ static void panel_rebuild(const char *buf, int len, int pos,
                 struct dirent *ent;
                 while ((ent = readdir(d)) != NULL && count < 60) {
                     if (strncmp(ent->d_name, word, wlen) != 0) continue;
+                    /* binary check — only show if actually executable */
+                    char full_path[2048];
+                    snprintf(full_path, sizeof(full_path), "%s/%s", dir, ent->d_name);
+                    if (access(full_path, X_OK) != 0) continue;
                     int dup = 0;
                     for (int j = 0; j < count; j++) if (strcmp(items[j], ent->d_name) == 0) { dup=1; break; }
                     if (!dup) items[count++] = strdup(ent->d_name);
@@ -585,6 +592,88 @@ static void panel_rebuild(const char *buf, int len, int pos,
         }
     } else {
         char cmd[256] = {0}; strncpy(cmd, buf, first_space < 255 ? first_space : 255);
+        if (strcmp(cmd, "cd") == 0) {
+            int ws2 = pos;
+            while (ws2 > 0 && buf[ws2-1] != ' ') ws2--;
+            int wlen2 = pos - ws2;
+            char word2[MAXIMUM_INPUT] = {0};
+            if (wlen2 > 0) strncpy(word2, buf + ws2, wlen2);
+
+            int total_cap = 64;
+            char **merged = malloc(total_cap * sizeof(char *));
+            if (!merged) { *items_out = NULL; *count_out = 0; return; }
+            int merged_count = 0;
+
+            {
+                extern char **cd_frecency_list(const char *query,
+                                               int limit, int *count_out);
+                int fcount = 0;
+                char **flist = cd_frecency_list(
+                    wlen2 > 0 ? word2 : "", 8, &fcount);
+
+                if (flist && fcount > 0) {
+                    /* separator */
+                    if (merged_count < total_cap)
+                        merged[merged_count++] = strdup("★ frecency");
+
+                    for (int fi = 0; fi < fcount &&
+                                     merged_count < total_cap; fi++) {
+                        struct stat st;
+                        if (stat(flist[fi], &st) == 0 &&
+                            S_ISDIR(st.st_mode)) {
+                            char display[512];
+                            const char *home = getenv("HOME");
+                            if (home && strncmp(flist[fi], home,
+                                                strlen(home)) == 0) {
+                                snprintf(display, sizeof(display), "~%s",
+                                         flist[fi] + strlen(home));
+                            } else {
+                                strncpy(display, flist[fi],
+                                        sizeof(display)-1);
+                            }
+                            merged[merged_count++] = strdup(display);
+                        }
+                        free(flist[fi]);
+                    }
+                    free(flist);
+                }
+            }
+
+            {
+                char pattern[MAXIMUM_INPUT];
+                if (wlen2 == 0) {
+                    strncpy(pattern, "./*", MAXIMUM_INPUT-1);
+                } else {
+                    /* `cd foo<TAB>` → foo* glob */
+                    strncpy(pattern, word2, MAXIMUM_INPUT-2);
+                    strncat(pattern, "*",
+                            MAXIMUM_INPUT - strlen(pattern) - 1);
+                }
+
+                /* separator */
+                if (merged_count < total_cap)
+                    merged[merged_count++] = strdup("📁 subdirs");
+
+                glob_t g;
+                if (glob(pattern, GLOB_MARK | GLOB_TILDE, NULL, &g) == 0) {
+                    for (size_t gi = 0;
+                         gi < g.gl_pathc && merged_count < total_cap;
+                         gi++) {
+                        const char *entry = g.gl_pathv[gi];
+                        int elen = strlen(entry);
+                        if (elen == 0 || entry[elen-1] != '/') continue;
+                        merged[merged_count++] = strdup(entry);
+                    }
+                    globfree(&g);
+                }
+            }
+
+            if (merged_count == 0) { free(merged); return; }
+            *items_out  = merged;
+            *count_out  = merged_count;
+            return;
+        }
+
         int ws = pos; while (ws > 0 && buf[ws-1] != ' ') ws--;
         int wlen = pos - ws; char word[MAXIMUM_INPUT] = {0}; strncpy(word, buf + ws, wlen);
         char cmdline[MAXIMUM_INPUT] = {0}; strncpy(cmdline, buf, len); cmdline[len] = '\0';
@@ -635,6 +724,20 @@ static void panel_render(char **items, int count, int sel, int *panel_rows_out) 
     int rows = 0;
     for (int i = 0; i < visible; i++) {
         if (i % cols == 0) { write(STDOUT_FILENO, "\n\033[K", 4); rows++; }
+        if (items[i][0] == 0x2605 ||   /* ★ (UTF-8: E2 98 85) */
+    (items[i][0] == (char)0xE2 && /* UTF-8 ★ */
+     (unsigned char)items[i][1] == 0x98 &&
+     (unsigned char)items[i][2] == 0x85) ||
+    (items[i][0] == (char)0xF0 && /* UTF-8 📁 */
+     (unsigned char)items[i][1] == 0x9F)) {
+            write(STDOUT_FILENO, "\033[2;33m", 7);
+            write(STDOUT_FILENO, items[i], strlen(items[i]));
+            write(STDOUT_FILENO, "\033[0m", 4);
+            int pad = col_width - utf8_display_len(items[i]);
+            for (int pp = 0; pp < pad; pp++)
+                write(STDOUT_FILENO, " ", 1);
+            continue;
+     }
         write(STDOUT_FILENO, i == sel ? "\033[7m" : "\033[2;36m", i == sel ? 4 : 7);
         write(STDOUT_FILENO, items[i], strlen(items[i]));
         write(STDOUT_FILENO, "\033[0m", 4);
@@ -887,7 +990,31 @@ char *read_line(const char *prompt) {
                 ml_prev_rows = render_ml(prompt, buf, len, pos, ml_prev_rows);
                 continue;
             }
-            panel_sel = (panel_sel == -1) ? 0 : (panel_sel + 1) % panel_count;
+            int visible_count = panel_count < 60 ? panel_count : 60;
+            {
+                int term_width = 80;
+                struct winsize ws_tmp;
+                if (ioctl(STDOUT_FILENO, TIOCGWINSZ, &ws_tmp) == 0 && ws_tmp.ws_col > 0)
+                    term_width = ws_tmp.ws_col;
+                int col_width = 0;
+                for (int i = 0; i < panel_count; i++) {
+                    int l = utf8_display_len(panel_items[i]);
+                    if (l > col_width) col_width = l;
+                }
+                col_width += 2;
+                int cols = term_width / col_width;
+                if (cols < 1) cols = 1;
+                visible_count = panel_count < cols * 4 ? panel_count : cols * 4;
+            }
+            // debug panel_sel = (panel_sel == -1) ? 0 : (panel_sel + 1) % visible_count;
+            do {
+                panel_sel = (panel_sel == -1) ? 0
+                          : (panel_sel + 1) % visible_count;
+            } while (panel_sel < panel_count &&
+                     panel_items[panel_sel] != NULL &&
+                     (panel_items[panel_sel][0] == (char)0xE2 ||   /* ★ */
+                      panel_items[panel_sel][0] == (char)0xF0));   /* 📁 */
+
             panel_render(panel_items, panel_count, panel_sel, &panel_rows);
             ml_prev_rows = render_ml(prompt, buf, len, pos, ml_prev_rows);
             continue;

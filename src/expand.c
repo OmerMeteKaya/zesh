@@ -1097,8 +1097,7 @@ char *expand_word(const char *word, int last_exit_status) {
                     if (get_length) {
                         const char *v = var_get(var_name);
                         char nbuf[16];
-                        (unsigned long)snprintf(nbuf, sizeof(nbuf), "%lu", v ? strlen(v) : 0);
-                        append_str(&buf, &len, &capacity, nbuf);
+                        snprintf(nbuf, sizeof(nbuf), "%zu", v ? strlen(v) : (size_t)0);
                     } else {
                         const char *var_value = var_get(var_name);
                         if (!var_value) var_value = "";

@@ -322,7 +322,6 @@ int main(int argc, char *argv[]) {
 /* ---------------------------------------------------------------- */
     /*  REPL                                                             */
     /* ---------------------------------------------------------------- */
-    char line[MAX_INPUT];
     while (1) {
        int from_block = 0;
         /* --- Build prompt --- */
@@ -516,7 +515,6 @@ int main(int argc, char *argv[]) {
         if (!has_compound &&
     ntokens > 0 &&
     tokens[0].type == TOK_WORD && tokens[0].value) {
-            char *expanded = alias_expand(tokens[0].value);
             if (ntokens > 0 &&
                 tokens[0].type == TOK_WORD && tokens[0].value) {
                 char *expanded = alias_expand(tokens[0].value);

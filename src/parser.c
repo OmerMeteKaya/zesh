@@ -11,8 +11,6 @@
 /*  Forward declarations                                                */
 /* ------------------------------------------------------------------ */
 static CmdList *parse_list_internal(Token *toks, int ntokens);
-static CmdList *parse_compound_body(Token *toks, int ntokens,
-                                     int *consumed);
 
 /* ------------------------------------------------------------------ */
 /*  Helpers — argv / command builders (unchanged from original)        */
@@ -517,6 +515,7 @@ static IfNode *parse_if(Token *toks, int ntokens, int *consumed) {
             }
             node->elif_bodies[ei] = parse_list_internal(toks + i, found2 - i);
             i = found2;
+            (void)fkw2;
             /* outer loop will see elif/else/fi at i and re-process */
             continue;
         }

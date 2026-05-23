@@ -22,17 +22,22 @@ void history_init(const char *db_path) {
                       ");";
     
     sqlite3_exec(db, sql, NULL, NULL, NULL);
+    sqlite3_exec(db,
+    "CREATE TABLE IF NOT EXISTS cd_visits("
+    "  path     TEXT PRIMARY KEY,"
+    "  visits   INTEGER DEFAULT 1,"
+    "  last_ts  INTEGER DEFAULT (strftime('%s','now'))"
+    ");",
+    NULL, NULL, NULL);
 }
 
 void history_add(const char *line) {
     if (!line || !db) return;
 
-    /* boş satır kontrolü */
     const char *p = line;
     while (*p && isspace((unsigned char)*p)) p++;
     if (*p == '\0') return;
 
-    /* son kayıtla aynıysa ekleme */
     const char *check_sql = "SELECT cmd FROM history ORDER BY id DESC LIMIT 1;";
     sqlite3_stmt *check;
     if (sqlite3_prepare_v2(db, check_sql, -1, &check, NULL) == SQLITE_OK) {
@@ -40,7 +45,7 @@ void history_add(const char *line) {
             const char *last = (const char *)sqlite3_column_text(check, 0);
             if (last && strcmp(last, line) == 0) {
                 sqlite3_finalize(check);
-                return;  /* aynı komut, kaydetme */
+                return;
             }
         }
         sqlite3_finalize(check);
@@ -210,7 +215,74 @@ int history_count(void) {
     sqlite3_finalize(stmt);
     return 0;
 }
+/* ------------------------------------------------------------------ */
+/*  Smart cd — frecency database                                        */
+/*                                                                      */
+/*  Table: cd_visits(path TEXT, visits INT, last_ts INT)               */
+/*  Score: visits / (1 + age_days)  — simple frecency                  */
+/* ------------------------------------------------------------------ */
 
+void cd_visit(const char *path) {
+    if (!db || !path || !*path) return;
+
+    const char *upsert =
+        "INSERT INTO cd_visits(path, visits, last_ts) VALUES(?,1,strftime('%s','now'))"
+        " ON CONFLICT(path) DO UPDATE SET"
+        "   visits  = visits + 1,"
+        "   last_ts = strftime('%s','now');";
+
+    sqlite3_stmt *stmt;
+    if (sqlite3_prepare_v2(db, upsert, -1, &stmt, NULL) != SQLITE_OK) return;
+    sqlite3_bind_text(stmt, 1, path, -1, SQLITE_STATIC);
+    sqlite3_step(stmt);
+    sqlite3_finalize(stmt);
+}
+
+/*
+ * Returns up to `limit` paths whose basename or full path contains `query`,
+ * ordered by frecency score descending.
+ * Caller must free each string and the array itself.
+ */
+char **cd_frecency_list(const char *query, int limit, int *count_out) {
+    *count_out = 0;
+    if (!db || limit <= 0) return NULL;
+
+    const char *sql =
+        "SELECT path FROM cd_visits"
+        " WHERE path LIKE '%' || ? || '%'"
+        " ORDER BY CAST(visits AS REAL) /"
+        "   (1.0 + (strftime('%s','now') - last_ts) / 86400.0) DESC"
+        " LIMIT ?;";
+
+    sqlite3_stmt *stmt;
+    if (sqlite3_prepare_v2(db, sql, -1, &stmt, NULL) != SQLITE_OK) return NULL;
+    sqlite3_bind_text(stmt, 1, query  ? query  : "", -1, SQLITE_STATIC);
+    sqlite3_bind_int (stmt, 2, limit);
+
+    char **results = malloc(limit * sizeof(char *));
+    if (!results) { sqlite3_finalize(stmt); return NULL; }
+
+    int count = 0;
+    while (sqlite3_step(stmt) == SQLITE_ROW && count < limit) {
+        const char *p = (const char *)sqlite3_column_text(stmt, 0);
+        results[count++] = p ? strdup(p) : strdup("");
+    }
+    sqlite3_finalize(stmt);
+
+    if (count == 0) { free(results); return NULL; }
+    *count_out = count;
+    return results;
+}
+
+/* Single best frecency match — returns malloc'd string or NULL. */
+char *cd_frecency_top(const char *query) {
+    int count;
+    char **list = cd_frecency_list(query, 1, &count);
+    if (!list) return NULL;
+    char *result = list[0];   /* take ownership */
+    free(list);               /* free the array, NOT list[0] */
+    return result;
+}
 void history_close(void) {
     if (db) {
         sqlite3_close(db);

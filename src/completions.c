@@ -6,7 +6,9 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
-//#define _POSIX_C_SOURCE 200809L
+#define _POSIX_C_SOURCE 200809L   /* popen, pclose */
+
+extern char **cd_frecency_list(const char *query, int limit, int *count_out);
 
 typedef enum {
     DISTRO_UNKNOWN = 0,
@@ -341,6 +343,205 @@ static char **get_git_stashes(const char *prefix, int *count_out) {
     return run_and_collect(cmd, count_out);
 }
 
+/* Universal tools */
+static const char *kubectl_cmds[] = {
+    "get","describe","apply","delete","create","edit","exec",
+    "logs","port-forward","scale","rollout","config",
+    "namespace","pod","service","deployment","--help", NULL
+};
+static const char *terraform_cmds[] = {
+    "init","plan","apply","destroy","validate","fmt",
+    "show","state","import","output","refresh","--help", NULL
+};
+static const char *ansible_cmds[] = {
+    "-i","--inventory","-m","--module-name","-a","--args",
+    "-b","--become","-u","--user","--ask-pass",
+    "--ask-become-pass","-v","-vvv","--help", NULL
+};
+static const char *cmake_cmds[] = {
+    "-S","-B","-G","-D","-DCMAKE_BUILD_TYPE=Debug",
+    "-DCMAKE_BUILD_TYPE=Release","--build","--install",
+    "--target","--config","--help", NULL
+};
+static const char *meson_cmds[] = {
+    "setup","compile","install","test","dist",
+    "configure","introspect","wrap","--help", NULL
+};
+static const char *gcloud_cmds[] = {
+    "auth","compute","container","config","iam","run",
+    "storage","sql","pubsub","functions","--help", NULL
+};
+static const char *aws_cmds[] = {
+    "s3","ec2","iam","lambda","rds","eks","ecs","cloudformation",
+    "configure","sts","ssm","--help", NULL
+};
+static const char *az_cmds[] = {  /* Azure CLI */
+    "login","logout","account","vm","storage","network",
+    "webapp","functionapp","aks","acr","group","--help", NULL
+};
+static const char *tmux_cmds[] = {
+    "new","-s","attach","-t","detach","kill-session",
+    "list-sessions","split-window","new-window",
+    "select-pane","send-keys","--help", NULL
+};
+static const char *nvim_extra_cmds[] = {
+    "--headless","--noplugin","-u","NONE",
+    "+Lazy","--help", NULL
+};
+static const char *strace_cmds[] = {
+    "-p","-e","-o","-f","-c","-T","-t","-tt",
+    "-s","--help", NULL
+};
+static const char *perf_cmds[] = {
+    "stat","record","report","top","list",
+    "annotate","diff","bench","--help", NULL
+};
+static const char *objdump_cmds[] = {
+    "-d","-D","-f","-h","-t","-r","-s",
+    "--disassemble","--help", NULL
+};
+static const char *nm_cmds[] = {
+    "-a","-g","-u","-l","-n","--defined-only",
+    "--undefined-only","--help", NULL
+};
+static const char *ldd_cmds[] = {
+    "-v","--version","--help", NULL
+};
+static const char *readelf_cmds[] = {
+    "-a","-h","-l","-S","-s","-r","-d",
+    "--symbols","--help", NULL
+};
+static const char *socat_cmds[] = {
+    "TCP:","TCP-LISTEN:","UDP:","UNIX:","EXEC:",
+    "STDIO","FILE:","PIPE:","--help", NULL
+};
+static const char *nmap_cmds[] = {
+    "-sS","-sV","-sC","-O","-A","-p","-Pn",
+    "--script","--open","-oN","-oX","--help", NULL
+};
+static const char *netstat_cmds[] = {
+    "-t","-u","-l","-p","-n","-r","-s",
+    "-a","--help", NULL
+};
+static const char *ss_cmds[] = {
+    "-t","-u","-l","-p","-n","-a","-s",
+    "-4","-6","--help", NULL
+};
+static const char *iptables_cmds[] = {
+    "-A","-D","-I","-L","-F","-N","-X",
+    "-t","--line-numbers","--help", NULL
+};
+static const char *openssl_cmds[] = {
+    "genrsa","rsa","req","x509","pkcs12","s_client",
+    "s_server","dgst","enc","rand","verify","--help", NULL
+};
+static const char *pass_cmds[] = {  /* password-store */
+    "show","insert","generate","rm","mv","cp","edit",
+    "git","ls","grep","--help", NULL
+};
+static const char *podman_cmds[] = {  /* same as docker */
+    "run","ps","build","exec","stop","rm","rmi","images",
+    "pull","push","logs","inspect","network","volume",
+    "compose","--help", NULL
+};
+static const char *flatpak_cmds[] = {
+    "install","uninstall","update","list","search","info",
+    "run","enter","override","remote-add","remote-list",
+    "repair","--help", NULL
+};
+static const char *snap_universal_cmds[] = {
+    "install","remove","refresh","list","find","info",
+    "enable","disable","connect","disconnect","run","help", NULL
+};
+static const char *virsh_cmds[] = {
+    "list","start","shutdown","destroy","suspend","resume",
+    "create","define","undefine","dumpxml","console",
+    "snapshot-create","snapshot-list","--help", NULL
+};
+static const char *qemu_cmds[] = {
+    "-m","-cpu","-smp","-hda","-hdb","-cdrom",
+    "-boot","-net","-drive","-enable-kvm",
+    "-nographic","-vnc","--help", NULL
+};
+static const char *ffprobe_cmds[] = {
+    "-i","-v","-show_streams","-show_format",
+    "-print_format","json","-select_streams","--help", NULL
+};
+static const char *convert_cmds[] = {  /* ImageMagick */
+    "-resize","-quality","-format","-rotate","-flip",
+    "-crop","-gravity","-blur","-sharpen","--help", NULL
+};
+static const char *sox_cmds[] = {
+    "-t","-r","-c","-b","--norm","--effects-file",
+    "trim","fade","rate","channels","--help", NULL
+};
+static const char *wget_cmds[] = {
+    "-O","-q","-r","-np","--no-check-certificate",
+    "-c","--mirror","--convert-links","--help", NULL
+};
+static const char *sed_cmds[] = {
+    "-n","-e","-i","-r","-E","--quiet","--help", NULL
+};
+static const char *awk_cmds[] = {
+    "-F","-v","-f","BEGIN","END","print","printf",
+    "NR","NF","FS","RS","--help", NULL
+};
+static const char *jq_cmds[] = {
+    "-r","-c","-n","-e","-s","-R",
+    ".","keys","values","length","map",
+    "select","has","type","--help", NULL
+};
+static const char *less_cmds[] = {
+    "-N","-S","-R","-i","-F","-X",
+    "+G","+F","--help", NULL
+};
+static const char *htop_cmds[] = {
+    "-d","-u","-p","-s","--no-color","--help", NULL
+};
+static const char *ps_cmds[] = {
+    "aux","auxf","-ef","-eo","--sort","--forest",
+    "-u","-p","--help", NULL
+};
+static const char *lsof_cmds[] = {
+    "-p","-u","-i","-n","-t","-c",
+    "+D","-d","--help", NULL
+};
+static const char *df_cmds[] = {
+    "-h","-H","-T","-i","-a","--total","--help", NULL
+};
+static const char *du_cmds[] = {
+    "-h","-s","-a","--max-depth","--apparent-size",
+    "-c","--exclude","--help", NULL
+};
+static const char *mount_cmds[] = {
+    "-t","-o","loop","bind","remount",
+    "-a","-l","--help", NULL
+};
+static const char *systemd_run_cmds[] = {
+    "--unit","--scope","--slice","--user","--system",
+    "--on-active","--on-calendar","--timer-property",
+    "--pty","--same-dir","--help", NULL
+};
+/* macOS specific */
+static const char *defaults_cmds[] = {
+    "read","write","delete","domains","find",
+    "rename","help", NULL
+};
+static const char *launchctl_cmds[] = {
+    "load","unload","start","stop","list",
+    "enable","disable","help", NULL
+};
+/* Android/Termux */
+static const char *pkg_termux_cmds[] = {
+    "install","uninstall","upgrade","update","list-installed",
+    "list-packages","search","show","files","help", NULL
+};
+/* FreeBSD/OpenBSD */
+static const char *service_cmds[] = {
+    "start","stop","restart","status","enable","disable",
+    "reload","onestart","onestop","help", NULL
+};
+
 static const char *pacman_cmds[] = {
     "-S", "-Ss", "-Si", "-Sw", "-Su", "-Syu", "-Syyu",
     "-R", "-Rs", "-Rns",
@@ -482,6 +683,47 @@ typedef struct {
 } CmdTable;
 
 static const CmdTable cmd_table[] = {
+    { "kubectl",       kubectl_cmds       },
+    { "terraform",     terraform_cmds     },
+    { "ansible",       ansible_cmds       },
+    { "cmake",         cmake_cmds         },
+    { "meson",         meson_cmds         },
+    { "gcloud",        gcloud_cmds        },
+    { "aws",           aws_cmds           },
+    { "az",            az_cmds            },
+    { "tmux",          tmux_cmds          },
+    { "strace",        strace_cmds        },
+    { "perf",          perf_cmds          },
+    { "objdump",       objdump_cmds       },
+    { "nm",            nm_cmds            },
+    { "readelf",       readelf_cmds       },
+    { "socat",         socat_cmds         },
+    { "nmap",          nmap_cmds          },
+    { "netstat",       netstat_cmds       },
+    { "ss",            ss_cmds            },
+    { "iptables",      iptables_cmds      },
+    { "openssl",       openssl_cmds       },
+    { "pass",          pass_cmds          },
+    { "podman",        podman_cmds        },
+    { "flatpak",       flatpak_cmds       },
+    { "snap",          snap_universal_cmds},
+    { "virsh",         virsh_cmds         },
+    { "ffprobe",       ffprobe_cmds       },
+    { "convert",       convert_cmds       },
+    { "wget",          wget_cmds          },
+    { "sed",           sed_cmds           },
+    { "awk",           awk_cmds           },
+    { "jq",            jq_cmds            },
+    { "less",          less_cmds          },
+    { "htop",          htop_cmds          },
+    { "ps",            ps_cmds            },
+    { "lsof",          lsof_cmds          },
+    { "df",            df_cmds            },
+    { "du",            du_cmds            },
+    { "mount",         mount_cmds         },
+    { "defaults",      defaults_cmds      },
+    { "launchctl",     launchctl_cmds     },
+    { "service",       service_cmds       },
     { "git",             git_cmds              },
     { "systemctl",       systemctl_cmds        },
     { "systemd-analyze", systemd_analyze_cmds  },
@@ -633,114 +875,323 @@ char **get_subcommands(const char *cmd, const char *word, int *count_out) {
     *count_out = count;
     return results;
 }
+static int ssh_has_dup(char **arr, int count, const char *h) {
+    for (int i = 0; i < count; i++)
+        if (arr[i] && strcmp(arr[i], h) == 0) return 1;
+    return 0;
+}
+
+static int ssh_is_dup(char **arr, int count, const char *h) {
+    if (!arr || !h) return 0;
+    for (int i = 0; i < count; i++)
+        if (arr[i] && strcmp(arr[i], h) == 0) return 1;
+    return 0;
+}
 
 char **get_dynamic_completions(const char *cmdline, int cursor_pos,
                                 int *count_out) {
     *count_out = 0;
-    if (!cmdline) return NULL;
+    if (!cmdline || !*cmdline) return NULL;
 
-    /* parse cmdline into words */
+    /* ── parse cmdline → words[] ─────────────────────────────── */
     char line[4096];
-    strncpy(line, cmdline, sizeof(line)-1);
+    strncpy(line, cmdline, sizeof(line) - 1);
+    line[sizeof(line) - 1] = '\0';
 
-    char *words[32] = {0};
-    int nwords = 0;
+    char *words[32];
+    int   nwords = 0;
+    memset(words, 0, sizeof(words));
+
     char *p = line;
-    while (*p && nwords < 32) {
+
+
+
+
+    while (*p && nwords < 31) {
         while (*p == ' ') p++;
+        for (int _i = 0; _i < nwords; _i++)
+            if (!words[_i]) { *count_out = 0; return NULL; }
         if (!*p) break;
         words[nwords++] = p;
+        if (nwords == 0 || !words[0]) return NULL;
         while (*p && *p != ' ') p++;
         if (*p) *p++ = '\0';
     }
-    if (nwords == 0) return NULL;
 
-    /* current (incomplete) word — last word if cmdline ends without space */
-    int ends_with_space = (cmdline[strlen(cmdline)-1] == ' ');
-    const char *current_word = ends_with_space ? "" :
-                               (nwords > 0 ? words[nwords-1] : "");
+    if (nwords == 0 || !words[0]) return NULL;
+
+    /* ── current word + effective_words ─────────────────────── */
+    int ends_with_space = (cmdline[strlen(cmdline) - 1] == ' ');
+    const char *current_word = ends_with_space ? ""
+                             : (nwords > 0 ? words[nwords - 1] : "");
     int effective_words = ends_with_space ? nwords : nwords - 1;
 
-    /* only handle git for now */
+    /* ── NULL-safe word accessor ─────────────────────────────── */
+#define W(i) ((i) < nwords && words[(i)] ? words[(i)] : "")
+
+    /* ── cd frecency ─────────────────────────────────────────── */
+    if (strcmp(W(0), "cd") == 0) {
+        extern char **cd_frecency_list(const char *q, int lim, int *n);
+        int fcount = 0;
+        char **flist = cd_frecency_list(
+            (current_word && *current_word) ? current_word : "",
+            16, &fcount);
+        if (flist && fcount > 0) { *count_out = fcount; return flist; }
+        free(flist);
+        return NULL;
+    }
+
     if (effective_words == 0) return NULL;
-    if (strcmp(words[0], "git") != 0) return NULL;
+    /* ── process name completion ─────────────────────────────── */
+    if (strcmp(W(0), "pkill") == 0 || strcmp(W(0), "killall") == 0 ||
+        strcmp(W(0), "renice") == 0) {
+        char cmd[512];
+        if (current_word && *current_word)
+            snprintf(cmd, sizeof(cmd),
+                "ps -eo comm= 2>/dev/null | sort -u | grep '^%s'",
+                current_word);
+        else
+            snprintf(cmd, sizeof(cmd),
+                "ps -eo comm= 2>/dev/null | sort -u | head -20");
+        return run_and_collect(cmd, count_out);
+    }
 
-    if (effective_words == 1) {
-        /* "git <TAB>" — return static git subcommands filtered by current_word */
+    if (strcmp(W(0), "kill") == 0) {
+        char cmd[512];
+        if (current_word && *current_word)
+            snprintf(cmd, sizeof(cmd),
+                "ps -eo pid=,comm= 2>/dev/null | grep '%s'",
+                current_word);
+        else
+            snprintf(cmd, sizeof(cmd),
+                "ps -eo pid=,comm= 2>/dev/null | head -20");
+        return run_and_collect(cmd, count_out);
+    }
+
+    /* ── systemctl service completion ───────────────────────── */
+    if (strcmp(W(0), "systemctl") == 0 && effective_words >= 1) {
+        const char *sub = W(1);
+        if (*sub && (strcmp(sub, "start")   == 0 ||
+                     strcmp(sub, "stop")    == 0 ||
+                     strcmp(sub, "restart") == 0 ||
+                     strcmp(sub, "status")  == 0 ||
+                     strcmp(sub, "enable")  == 0 ||
+                     strcmp(sub, "disable") == 0 ||
+                     strcmp(sub, "reload")  == 0)) {
+            char cmd[512];
+            if (current_word && *current_word)
+                snprintf(cmd, sizeof(cmd),
+                    "systemctl list-units --all --no-legend 2>/dev/null"
+                    " | awk '{print $1}' | grep '^%s'", current_word);
+            else
+                snprintf(cmd, sizeof(cmd),
+                    "systemctl list-units --all --no-legend 2>/dev/null"
+                    " | awk '{print $1}' | head -20");
+            return run_and_collect(cmd, count_out);
+        }
+    }
+
+    /* ── ssh hostname + key completion ──────────────────────── */
+    if (strcmp(W(0), "ssh") == 0) {
+        if (effective_words >= 1 && strcmp(W(effective_words - 1), "-i") == 0) {
+            char cmd[512];
+            if (current_word && *current_word)
+                snprintf(cmd, sizeof(cmd),
+                    "ls ~/.ssh/ 2>/dev/null | grep -v '\\.pub$'"
+                    " | grep '^%s'", current_word);
+            else
+                snprintf(cmd, sizeof(cmd),
+                    "ls ~/.ssh/ 2>/dev/null | grep -v '\\.pub$'");
+            return run_and_collect(cmd, count_out);
+        }
+
+        if (effective_words >= 1) {
+            const char *prev = W(effective_words - 1);
+            if (strcmp(prev, "-p") == 0 || strcmp(prev, "-l") == 0 ||
+                strcmp(prev, "-o") == 0 || strcmp(prev, "-b") == 0 ||
+                strcmp(prev, "-c") == 0 || strcmp(prev, "-e") == 0 ||
+                strcmp(prev, "-w") == 0)
+                return NULL;
+        }
+
+        int host_seen = 0;
+        for (int wi = 1; wi < effective_words; wi++) {
+            if (!words[wi]) continue;
+            if (words[wi][0] != '-') { host_seen = 1; break; }
+            if (strcmp(words[wi], "-p") == 0 || strcmp(words[wi], "-l") == 0 ||
+                strcmp(words[wi], "-i") == 0 || strcmp(words[wi], "-o") == 0 ||
+                strcmp(words[wi], "-b") == 0 || strcmp(words[wi], "-c") == 0 ||
+                strcmp(words[wi], "-e") == 0 || strcmp(words[wi], "-w") == 0)
+                wi++;
+        }
+        if (host_seen) return NULL;
+
+        char **all = malloc(256 * sizeof(char *));
+        if (!all) return NULL;
+        int total = 0;
+
+        {
+            char config_sources[2048];
+            strncpy(config_sources, "~/.ssh/config",
+                    sizeof(config_sources) - 1);
+            FILE *gl = popen("ls ~/.ssh/config.d/*.conf 2>/dev/null", "r");
+            if (gl) {
+                char cline[512];
+                while (fgets(cline, sizeof(cline), gl)) {
+                    int cl = strlen(cline);
+                    while (cl > 0 && (cline[cl-1]=='\n'||cline[cl-1]=='\r'))
+                        cline[--cl] = '\0';
+                    if (cl > 0) {
+                        strncat(config_sources, " ",
+                                sizeof(config_sources)
+                                - strlen(config_sources) - 1);
+                        strncat(config_sources, cline,
+                                sizeof(config_sources)
+                                - strlen(config_sources) - 1);
+                    }
+                }
+                pclose(gl);
+            }
+
+            char cmd[4096];
+            snprintf(cmd, sizeof(cmd),
+                "grep -h '^[[:space:]]*Host[[:space:]]'"
+                " %s 2>/dev/null"
+                " | awk '{for(i=2;i<=NF;i++) print $i}'"
+                " | grep -v '[*?]'",
+                config_sources);
+
+            int ccount = 0;
+            char **clist = run_and_collect(cmd, &ccount);
+            for (int ci = 0; ci < ccount && total < 240; ci++) {
+                if (!clist[ci]) continue;
+                if (current_word && *current_word &&
+                    strncmp(clist[ci], current_word,
+                            strlen(current_word)) != 0) {
+                    free(clist[ci]); continue;
+                }
+                if (!ssh_is_dup(all, total, clist[ci]))
+                    all[total++] = clist[ci];
+                else
+                    free(clist[ci]);
+            }
+            free(clist);
+        }
+
+        /* known_hosts */
+        {
+            char cmd[512];
+            if (current_word && *current_word)
+                snprintf(cmd, sizeof(cmd),
+                    "awk '!/^@/ && !/^#/ {"
+                    " n=split($1,a,\",\");"
+                    " for(i=1;i<=n;i++) if(a[i]!~/^\\|/) print a[i]}'"
+                    " ~/.ssh/known_hosts 2>/dev/null | grep '^%s'",
+                    current_word);
+            else
+                snprintf(cmd, sizeof(cmd),
+                    "awk '!/^@/ && !/^#/ {"
+                    " n=split($1,a,\",\");"
+                    " for(i=1;i<=n;i++) if(a[i]!~/^\\|/) print a[i]}'"
+                    " ~/.ssh/known_hosts 2>/dev/null");
+
+            int kcount = 0;
+            char **klist = run_and_collect(cmd, &kcount);
+            for (int ki = 0; ki < kcount && total < 255; ki++) {
+                if (!klist[ki]) continue;
+                if (!ssh_is_dup(all, total, klist[ki]))
+                    all[total++] = klist[ki];
+                else
+                    free(klist[ki]);
+            }
+            free(klist);
+        }
+
+        if (total == 0) { free(all); return NULL; }
+        *count_out = total;
+        return all;
+    }
+
+    /* ── man page completion ─────────────────────────────────── */
+    if (strcmp(W(0), "man") == 0 && current_word && *current_word) {
+        char cmd[512];
+        snprintf(cmd, sizeof(cmd),
+            "man -k '' 2>/dev/null | awk '{print $1}'"
+            " | grep '^%s' | head -20", current_word);
+        return run_and_collect(cmd, count_out);
+    }
+
+    /* ── env variable completion ─────────────────────────────── */
+    if (strcmp(W(0), "export") == 0 || strcmp(W(0), "unset") == 0) {
+        char cmd[512];
+        if (current_word && *current_word)
+            snprintf(cmd, sizeof(cmd),
+                "env 2>/dev/null | cut -d= -f1 | grep '^%s'",
+                current_word);
+        else
+            snprintf(cmd, sizeof(cmd),
+                "env 2>/dev/null | cut -d= -f1 | head -20");
+        return run_and_collect(cmd, count_out);
+    }
+
+    /* ── git subcommand completions ──────────────────────────── */
+    if (strcmp(W(0), "git") != 0) return NULL;
+
+    if (effective_words == 1)
         return get_subcommands("git", current_word, count_out);
-    }
 
-    const char *subcmd = words[1];
-    const char *prefix = current_word;
+    const char *subcmd = W(1);
+    const char *prefix = current_word ? current_word : "";
 
-    /* git add → changed files */
-    if (strcmp(subcmd, "add") == 0) {
+    if (strcmp(subcmd, "add") == 0)
         return get_git_changed_files(prefix, count_out);
-    }
 
-    /* git checkout / switch / merge / branch -d → branches */
-    if (strcmp(subcmd, "checkout") == 0 ||
-        strcmp(subcmd, "switch") == 0 ||
-        strcmp(subcmd, "merge") == 0 ||
-        strcmp(subcmd, "rebase") == 0) {
+    if (strcmp(subcmd, "checkout") == 0 || strcmp(subcmd, "switch")  == 0 ||
+        strcmp(subcmd, "merge")    == 0 || strcmp(subcmd, "rebase")  == 0)
         return get_git_branches(prefix, count_out);
-    }
 
-    /* git branch — if -d or -D flag present, complete branches */
     if (strcmp(subcmd, "branch") == 0 && effective_words >= 2) {
         for (int i = 2; i < effective_words; i++) {
-            if (strcmp(words[i], "-d") == 0 ||
-                strcmp(words[i], "-D") == 0 ||
-                strcmp(words[i], "-m") == 0) {
+            if (!words[i]) continue;
+            if (strcmp(words[i], "-d") == 0 || strcmp(words[i], "-D") == 0 ||
+                strcmp(words[i], "-m") == 0)
                 return get_git_branches(prefix, count_out);
-            }
         }
     }
 
-    /* git push / pull → remotes */
-    if (strcmp(subcmd, "push") == 0 ||
-        strcmp(subcmd, "pull") == 0 ||
+    if (strcmp(subcmd, "push")  == 0 || strcmp(subcmd, "pull")  == 0 ||
         strcmp(subcmd, "fetch") == 0) {
-        if (effective_words == 2) {
-            return get_git_remotes(prefix, count_out);
-        }
-        if (effective_words == 3) {
-            /* git push origin <TAB> → branches */
-            return get_git_branches(prefix, count_out);
-        }
+        if (effective_words == 2) return get_git_remotes(prefix, count_out);
+        if (effective_words == 3) return get_git_branches(prefix, count_out);
     }
 
-    /* git stash pop/drop/show → stash list */
     if (strcmp(subcmd, "stash") == 0 && effective_words >= 2) {
-        const char *stash_sub = effective_words > 2 ? words[2] : "";
-        if (strcmp(stash_sub, "pop") == 0 ||
-            strcmp(stash_sub, "drop") == 0 ||
-            strcmp(stash_sub, "show") == 0 ||
-            strcmp(stash_sub, "apply") == 0) {
+        const char *stash_sub = W(2);
+        if (strcmp(stash_sub, "pop")   == 0 || strcmp(stash_sub, "drop")  == 0 ||
+            strcmp(stash_sub, "show")  == 0 || strcmp(stash_sub, "apply") == 0)
             return get_git_stashes(prefix, count_out);
-        }
-        /* git stash <TAB> → stash subcommands */
+
         static const char *stash_cmds[] = {
             "push","pop","list","show","drop","clear",
             "apply","branch","create","store", NULL
         };
-        int wlen = strlen(stash_sub);
-        int total = 0;
+        int wlen = stash_sub ? strlen(stash_sub) : 0;
+        int total2 = 0;
         for (int i = 0; stash_cmds[i]; i++)
-            if (!wlen || strncmp(stash_cmds[i], stash_sub, wlen)==0) total++;
-        if (total > 0) {
-            char **r = malloc(total * sizeof(char*));
+            if (!wlen || strncmp(stash_cmds[i], stash_sub, wlen) == 0)
+                total2++;
+        if (total2 > 0) {
+            char **r = malloc(total2 * sizeof(char *));
+            if (!r) return NULL;
             int c = 0;
-            for (int i = 0; stash_cmds[i] && c<total; i++)
-                if (!wlen || strncmp(stash_cmds[i], stash_sub, wlen)==0)
+            for (int i = 0; stash_cmds[i] && c < total2; i++)
+                if (!wlen || strncmp(stash_cmds[i], stash_sub, wlen) == 0)
                     r[c++] = strdup(stash_cmds[i]);
             *count_out = c;
             return r;
         }
     }
 
-    /* git commit -m → no completion */
-    /* git log / diff / show → no special completion for now */
-
+#undef W
     return NULL;
 }

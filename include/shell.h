@@ -198,4 +198,9 @@ void        arr_set_from_list(const char *name, char **vals, int count);
 extern int g_return_value;
 extern int g_returning;
 
+/* history.c — smart cd */
+void  cd_visit(const char *path);
+char *cd_frecency_top(const char *query);
+char **cd_frecency_list(const char *query, int limit, int *count_out);
+
 #endif //SHELL_H
