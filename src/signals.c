@@ -9,7 +9,7 @@
 #include <sys/types.h>
 #include "../include/jobs.h"
 
-#define _POSIX_C_SOURCE 200809L
+//#define _POSIX_C_SOURCE 200809L
 
 extern int ps_pid_forget(pid_t pid);
 volatile sig_atomic_t g_sigint_received = 0;
@@ -36,21 +36,16 @@ static void sigchld_handler(int sig) {
 
     while ((pid = waitpid(-1, &status, WNOHANG | WUNTRACED)) > 0) {
         if (ps_pid_forget(pid)) continue;
-
-        if (!job_find_by_pgid(pid) && pid != fg_pid) continue;
+        if (pid == (pid_t)fg_pid) continue;
 
         if (WIFEXITED(status) || WIFSIGNALED(status)) {
             job_remove(pid);
-            if (pid == fg_pid) fg_pid = 0;
             if (WIFEXITED(status))
                 last_exit_status = WEXITSTATUS(status);
             else
                 last_exit_status = 128 + WTERMSIG(status);
         } else if (WIFSTOPPED(status)) {
             job_set_status(pid, JOB_STOPPED);
-            if (pid == (pid_t)fg_pid) fg_pid = 0;
-            const char *msg = "\n[stopped]\n";
-            write(STDOUT_FILENO, msg, 11);
         }
     }
 }
@@ -61,7 +56,7 @@ void signals_init(void) {
     /* SIGINT — shell handles, resets prompt when no fg process */
     sa.sa_handler = sigint_handler;
     sigemptyset(&sa.sa_mask);
-    sa.sa_flags = SA_RESTART;
+    sa.sa_flags = 0;
     sigaction(SIGINT, &sa, NULL);
 
     /* SIGQUIT — ignore in shell */

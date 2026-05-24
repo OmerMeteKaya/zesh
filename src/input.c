@@ -1033,19 +1033,26 @@ char *read_line(const char *prompt) {
 
         /* Ctrl+C */
         if (c == 3) {
-            /* clear buffer and all multiline state */
-            memset(buf, 0, buf_cap); len = pos = hist_off = 0;
+            extern volatile int g_interrupt_loop;
+            g_interrupt_loop = 1;
+
+            if (len > 0) {
+                write(STDOUT_FILENO, "^C\r\n", 4);
+            }
+
+            memset(buf, 0, buf_cap);
+            len = pos = hist_off = 0;
             memset(saved, 0, sizeof(saved));
             panel_free(panel_items, panel_count);
             panel_items = NULL; panel_count = 0; panel_sel = -1;
             panel_render(NULL, 0, -1, &panel_rows);
-            /* print ^C and move to fresh line */
-            write(STDOUT_FILENO, "^C\n", 3);
             ml_prev_rows = 1;
-            /* re-render fresh empty prompt */
+            g_interrupt_loop = 0;
             ml_prev_rows = render_ml(prompt, buf, len, pos, ml_prev_rows);
             continue;
         }
+
+
 
         /* Enter */
         if (c == '\r' || c == '\n') {

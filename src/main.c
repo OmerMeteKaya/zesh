@@ -570,8 +570,19 @@ int main(int argc, char *argv[]) {
             CmdList *list = parse_list(tokens, ntokens);
             if (list) {
                 fill_heredocs(list);
-                execute_list(list);
-                cmdlist_free(list);
+
+                struct termios exec_term;
+                tcgetattr(STDIN_FILENO, &exec_term);
+                exec_term.c_lflag |= ISIG;   /* Ctrl+C → SIGINT */
+                tcsetattr(STDIN_FILENO, TCSAFLUSH, &exec_term);
+
+                g_interrupt_loop = 0;
+                int exec_status = execute_list(list);
+                if (exec_status == 130) {
+                    write(STDOUT_FILENO, "\r\n", 2);
+                }
+                g_sigint_received = 0;
+                g_interrupt_loop  = 0;
 
                 struct termios raw_restore;
                 tcgetattr(STDIN_FILENO, &raw_restore);
@@ -579,8 +590,11 @@ int main(int argc, char *argv[]) {
                 raw_restore.c_cc[VMIN]  = 1;
                 raw_restore.c_cc[VTIME] = 0;
                 tcsetattr(STDIN_FILENO, TCSAFLUSH, &raw_restore);
+
+                cmdlist_free(list);
             }
         }
+
 
         /* ---- Cleanup ---- */
         tokens_free(tokens, ntokens);

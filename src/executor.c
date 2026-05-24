@@ -2,6 +2,7 @@
 // Created by mete on 23.04.2026.
 //
 
+#include <errno.h>
 #include <unistd.h>
 #include <sys/wait.h>
 #include <fcntl.h>
@@ -10,6 +11,8 @@
 #include <string.h>
 #include <termios.h>
 #include <fnmatch.h>
+#include <errno.h>
+#include <unistd.h>
 #include "../include/jobs.h"
 #include "../include/shell.h"
 
@@ -17,7 +20,7 @@ int g_return_value = 0;
 int g_returning    = 0;
 extern void set_fg_pid(pid_t pid);
 extern int  last_exit_status;
-
+volatile int g_interrupt_loop = 0;
 LoopControl g_loop_control = LOOP_NORMAL;
 static int g_in_procsubst = 0;
 
@@ -177,6 +180,10 @@ static int execute_list_expanded(CmdList *list) {
             if (prev_op == OP_AND && last_status != 0) continue;
             if (prev_op == OP_OR  && last_status == 0) continue;
         }
+        if (g_sigint_received || g_interrupt_loop) {
+            return 130;
+        }
+
 
         switch (node->type) {
             case NODE_IF:
@@ -248,35 +255,41 @@ static int execute_while(WhileNode *node) {
     int status = 0;
 
     while (1) {
-        if (g_sigint_received) {
+        if (g_sigint_received || g_interrupt_loop) {
             g_sigint_received = 0;
-            return 130; /* 128 + SIGINT(2) */
+            g_interrupt_loop  = 0;
+            return 130;
         }
 
         int cond = execute_list_expanded(node->condition);
 
-        /* while: run while cond == 0 */
-        /* until: run while cond != 0 */
-        if (node->is_until) {
-            if (cond == 0) break;
-        } else {
-            if (cond != 0) break;
+        if (g_sigint_received || g_interrupt_loop) {
+            g_sigint_received = 0;
+            g_interrupt_loop  = 0;
+            return 130;
         }
+
+        if (node->is_until ? (cond == 0) : (cond != 0)) break;
 
         if (node->body)
             status = execute_list_expanded(node->body);
+
+        if (g_sigint_received || g_interrupt_loop) {
+            g_sigint_received = 0;
+            g_interrupt_loop  = 0;
+            return 130;
+        }
+
         if (g_loop_control == LOOP_BREAK) {
-            g_loop_control = LOOP_NORMAL;
-            break;
+            g_loop_control = LOOP_NORMAL; break;
         }
         if (g_loop_control == LOOP_CONTINUE) {
-            g_loop_control = LOOP_NORMAL;
-            continue;
+            g_loop_control = LOOP_NORMAL; continue;
         }
     }
-
     return status;
 }
+
 static int execute_case(CaseNode *node) {
 
     if (!node) return 1;
@@ -314,40 +327,41 @@ static int execute_case(CaseNode *node) {
 
 static int execute_for(ForNode *node) {
     if (!node) return 1;
-
     int status = 0;
-
-    /* if no word list given → iterate over "$@" (positional params) */
-    /* MVP: just iterate over node->words */
     if (node->nwords == 0) return 0;
 
     for (int i = 0; i < node->nwords; i++) {
-        if (g_sigint_received) {
+        if (g_sigint_received || g_interrupt_loop) {
             g_sigint_received = 0;
-            return 130; /* 128 + SIGINT(2) */
+            g_interrupt_loop  = 0;
+            return 130;
         }
-        /* expand the word before assigning */
+
         char *expanded = expand_word(node->words[i], last_exit_status);
         const char *val = expanded ? expanded : node->words[i];
-
-        /* set loop variable */
         local_var_set(node->var, val);
         if (expanded) free(expanded);
 
         if (node->body)
             status = execute_list_expanded(node->body);
+
+        if (g_sigint_received || g_interrupt_loop) {
+            g_sigint_received = 0;
+            g_interrupt_loop  = 0;
+            return 130;
+        }
+
         if (g_loop_control == LOOP_BREAK) {
-            g_loop_control = LOOP_NORMAL;
-            break;
+            g_loop_control = LOOP_NORMAL; break;
         }
         if (g_loop_control == LOOP_CONTINUE) {
-            g_loop_control = LOOP_NORMAL;
-            continue;
+            g_loop_control = LOOP_NORMAL; continue;
         }
     }
-
     return status;
 }
+
+
 
 int execute_list_in_subshell(CmdList *list) {
     /*
@@ -394,6 +408,9 @@ int execute_list(CmdList *list) {
             ListOp prev_op = list->nodes[i - 1].op;
             if (prev_op == OP_AND && last_status != 0) continue;
             if (prev_op == OP_OR  && last_status == 0) continue;
+        }
+        if (g_sigint_received || g_interrupt_loop) {
+            return 130;
         }
 
         /* --- dispatch on node type --- */
@@ -586,59 +603,104 @@ int execute(Pipeline *p) {
             execvp(cmd->argv[0], cmd->argv);
             perror(cmd->argv[0]);
             _exit(127);
-        } else if (pid > 0) {
-            if (heredoc_pipe[0] >= 0) close(heredoc_pipe[0]);
-            setpgid(pid, pid);
-            
-            if (p->background) {
-                // Build command string for job
-                char cmd_str[256] = {0};
-                for (int i = 0; i < cmd->argc && i < 10; i++) {  // Limit to prevent overflow
-                    if (i > 0) strcat(cmd_str, " ");
-                    strcat(cmd_str, cmd->argv[i]);
-                }
-                
-                int job_id = job_add(pid, cmd_str);
-                printf("[%d] %d\n", job_id, pid);
-                return 0;
-            } else {
-                // Give terminal control to child process group
-                if (!g_in_procsubst) tcsetpgrp(STDIN_FILENO, pid);
-                if (!g_in_procsubst) set_fg_pid(pid);
-                
-                int status;
-                pid_t result = waitpid(pid, &status, WUNTRACED);
-                
-                set_fg_pid(0);
-                // Take terminal control back
-                if (!g_in_procsubst) tcsetpgrp(STDIN_FILENO, getpgrp());
-                
-                // Handle stopped process
-                if (result > 0 && WIFSTOPPED(status)) {
-                    // Build command string for job
-                    char cmd_str[256] = {0};
-                    for (int i = 0; i < cmd->argc && i < 10; i++) {  // Limit to prevent overflow
-                        if (i > 0) strcat(cmd_str, " ");
-                        strcat(cmd_str, cmd->argv[i]);
-                    }
-                    
-                    int job_id = job_add(pid, cmd_str);
-                    job_set_status(pid, JOB_STOPPED);
-                    printf("[%d]+  Stopped\t\t%s\n", job_id, cmd_str);
-                    return 0;
-                }
-                
-                if (WIFEXITED(status)) {
-                    return WEXITSTATUS(status);
-                } else {
-                    return -1;
-                }
+        }  else if (pid > 0) {
+        if (heredoc_pipe[0] >= 0) close(heredoc_pipe[0]);
+
+        setpgid(pid, pid);
+
+        /* ── background ── */
+        if (p->background) {
+            char cmd_str[256] = {0};
+            for (int i = 0; i < cmd->argc && i < 10; i++) {
+                if (i > 0) strncat(cmd_str, " ",
+                                   sizeof(cmd_str)-strlen(cmd_str)-1);
+                strncat(cmd_str, cmd->argv[i],
+                        sizeof(cmd_str)-strlen(cmd_str)-1);
             }
-        } else {
-            // Fork failed
-            perror("fork");
-            return -1;
+            int job_id = job_add(pid, cmd_str);
+            printf("[%d] %d\n", job_id, pid);
+            return 0;
         }
+
+        /* ── foreground ── */
+
+            if (!g_in_procsubst) tcsetpgrp(STDIN_FILENO, pid);
+            if (!g_in_procsubst) set_fg_pid(pid);
+
+
+
+            int status = 0;
+            pid_t result;
+            int wait_count = 0;
+
+
+            do {
+                result = waitpid(pid, &status, WUNTRACED);
+                wait_count++;
+
+            } while (result == -1 && errno == EINTR
+                     && !g_sigint_received
+                     && !g_interrupt_loop);
+
+
+            set_fg_pid(0);
+            if (!g_in_procsubst) tcsetpgrp(STDIN_FILENO, getpgrp());
+
+
+
+        /* ── SIGINT / interrupt ── */
+            if (g_sigint_received || g_interrupt_loop) {
+                if (result == -1 && pid > 0) {
+                    kill(pid, SIGINT);
+                    waitpid(pid, &status, 0);
+                } else if (result > 0 && WIFSTOPPED(status)) {
+                    kill(pid, SIGINT);
+                    kill(pid, SIGCONT);
+                    waitpid(pid, &status, 0);
+                }
+                write(STDOUT_FILENO, "\r\n", 2);
+                return 130;
+            }
+
+            /* Ctrl+Z: stopped */
+            if (result > 0 && WIFSTOPPED(status)) {
+                char cmd_str[256] = {0};
+                for (int i = 0; i < cmd->argc && i < 10; i++) {
+                    if (i > 0) strncat(cmd_str, " ",
+                                       sizeof(cmd_str)-strlen(cmd_str)-1);
+                    strncat(cmd_str, cmd->argv[i],
+                            sizeof(cmd_str)-strlen(cmd_str)-1);
+                }
+                int job_id = job_add(pid, cmd_str);
+                job_set_status(pid, JOB_STOPPED);
+                write(STDOUT_FILENO, "\r\n", 2);
+                printf("[%d]+  Stopped\t\t%s\n", job_id, cmd_str);
+                /*
+                 * Loop içinde Ctrl+Z — döngüyü durdur.
+                 * g_loop_control = LOOP_BREAK ile execute_while/for
+                 * bir sonraki iterasyonda durur.
+                 */
+                g_loop_control = LOOP_BREAK;
+                return 0;
+            }
+            if (WIFEXITED(status))   return WEXITSTATUS(status);
+            if (WIFSIGNALED(status)) {
+                int sig = WTERMSIG(status);
+                if (sig == SIGINT) {
+                    g_sigint_received = 1;
+                    write(STDOUT_FILENO, "\r\n", 2);
+                }
+                return 128 + sig;
+            }
+            return -1;
+
+
+
+    } else {
+        /* fork failed */
+        perror("fork");
+        return -1;
+    }
     } else {
         // Multiple commands with pipes
         int **pipes = malloc((p->ncommands - 1) * sizeof(int*));
@@ -857,32 +919,50 @@ int execute(Pipeline *p) {
 
         while (done + stopped < p->ncommands) {
             pid_t w = waitpid(-pgid, &status, WUNTRACED);
+
+            if (w == -1 && errno == EINTR) {
+                if ((g_sigint_received || g_interrupt_loop) && pgid > 0) {
+                    kill(-pgid, SIGINT);
+                }
+                continue;
+            }
             if (w <= 0) break;
+
             if (WIFSTOPPED(status)) {
                 stopped++;
-                /* sigchld_handler already updated job table */
             } else {
                 done++;
-                if (WIFEXITED(status)) last_status = WEXITSTATUS(status);
+                if (WIFEXITED(status))
+                    last_status = WEXITSTATUS(status);
+                else if (WIFSIGNALED(status))
+                    last_status = 128 + WTERMSIG(status);
             }
         }
 
         set_fg_pid(0);
         if (!g_in_procsubst) tcsetpgrp(STDIN_FILENO, getpgrp());
 
+        if (g_sigint_received || g_interrupt_loop) {
+            write(STDOUT_FILENO, "\n", 1);
+            return 130;
+        }
+
         if (stopped > 0 && done < p->ncommands) {
-            /* at least one command stopped — add whole pipeline as stopped job */
             char cmd_str[256] = {0};
             for (int i = 0; i < p->commands[0].argc && i < 10; i++) {
-                if (i > 0) strncat(cmd_str, " ", sizeof(cmd_str)-strlen(cmd_str)-1);
-                strncat(cmd_str, p->commands[0].argv[i], sizeof(cmd_str)-strlen(cmd_str)-1);
+                if (i > 0) strncat(cmd_str, " ",
+                                   sizeof(cmd_str)-strlen(cmd_str)-1);
+                strncat(cmd_str, p->commands[0].argv[i],
+                        sizeof(cmd_str)-strlen(cmd_str)-1);
             }
             int job_id = job_add(pgid, cmd_str);
             job_set_status(pgid, JOB_STOPPED);
+            write(STDOUT_FILENO, "\n", 1);
             printf("[%d]+  Stopped\t\t%s\n", job_id, cmd_str);
         }
 
         free(pids);
         return last_status;
+
     }
 }

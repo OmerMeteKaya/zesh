@@ -147,6 +147,7 @@ typedef enum {
 } LoopControl;
 
 extern LoopControl g_loop_control;
+extern volatile int g_interrupt_loop;
 /* lexer.c */
 Token    *lex(const char *input, int *ntokens);
 void      tokens_free(Token *toks, int n);

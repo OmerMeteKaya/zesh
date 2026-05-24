@@ -61,6 +61,9 @@ int is_builtin(const char *cmd) {
     if (strcmp(cmd, "break")    == 0) return 1;
     if (strcmp(cmd, "continue") == 0) return 1;
     if (strcmp(cmd, "return") == 0) return 1;
+    if (strcmp(cmd, "true")  == 0) return 1;
+    if (strcmp(cmd, "false") == 0) return 1;
+    if (strcmp(cmd, ":")     == 0) return 1;
     return (strcmp(cmd, "cd") == 0) || 
            (strcmp(cmd, "exit") == 0) || 
            (strcmp(cmd, "export") == 0) || 
@@ -292,8 +295,18 @@ int run_builtin(Command *cmd) {
     if (!cmd || !cmd->argv || cmd->argc == 0) {
         return 1;
     }
+
     
     const char *builtin_cmd = cmd->argv[0];
+
+    if (strcmp(builtin_cmd, "true") == 0 ||
+        strcmp(builtin_cmd, ":")    == 0) {
+        return 0;
+        }
+    if (strcmp(builtin_cmd, "false") == 0) {
+        return 1;
+    }
+
     if (strcmp(cmd->argv[0], "return") == 0) {
         g_return_value = cmd->argc > 1 ? atoi(cmd->argv[1]) : 0;
         g_returning    = 1;

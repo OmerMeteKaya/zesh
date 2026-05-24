@@ -33,4 +33,5 @@ add_executable(shell
         src/config.c
         include/security.h
         include/signals.h
+        src/debug_signals.c
 )
