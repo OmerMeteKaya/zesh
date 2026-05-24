@@ -1178,7 +1178,7 @@ void expand_tokens(Token *toks, int ntokens, int last_exit_status) {
     if (!toks) return;
     
     for (int i = 0; i < ntokens; i++) {
-        if (toks[i].type == TOK_WORD && toks[i].value) {
+        if (toks[i].type == TOK_WORD && toks[i].value && !toks[i].quoted) {
             char *expanded = expand_word(toks[i].value, last_exit_status);
             if (expanded) {
                 free(toks[i].value);

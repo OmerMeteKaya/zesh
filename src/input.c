@@ -1087,14 +1087,28 @@ char *read_line(const char *prompt) {
 
             /* commit — print final rendered state then newline */
             /* re-render to ensure display is clean */
-            ml_render(prompt, buf, len, len, ml_prev_rows); /* cursor at end */
-            /* move to end of last line */
+            if (panel_rows > 0) {
+                char esc[16];
+                snprintf(esc, sizeof(esc), "\033[%dB", panel_rows);
+                write(STDOUT_FILENO, esc, strlen(esc));
+            }
+            /* erase everything below cursor (clears panel rows) */
+            write(STDOUT_FILENO, "\033[J", 3);
+            /* go back up to input line */
+            if (panel_rows > 0) {
+                char esc[16];
+                snprintf(esc, sizeof(esc), "\033[%dA", panel_rows);
+                write(STDOUT_FILENO, esc, strlen(esc));
+            }
+            panel_rows = 0;
+            ml_render(prompt, buf, len, len, ml_prev_rows);
             write(STDOUT_FILENO, "\033[K\r\n", 5);
 
             panel_free(panel_items, panel_count);
-            panel_render(NULL, 0, -1, &panel_rows);
+            panel_items = NULL; panel_count = 0; panel_sel = -1;
             history_total++;
             tcsetattr(STDIN_FILENO, TCSAFLUSH, &orig_termios);
+            tcflush(STDIN_FILENO, TCIFLUSH);
             if (len > 0) history_add(buf);
             char *result = strdup(buf);
             free(buf);

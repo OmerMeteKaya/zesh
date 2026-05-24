@@ -204,4 +204,10 @@ void  cd_visit(const char *path);
 char *cd_frecency_top(const char *query);
 char **cd_frecency_list(const char *query, int limit, int *count_out);
 
+/* ---- trap builtin state (signals.c / builtins.c) ---- */
+#define TRAP_NSIG 32
+extern char *g_trap_actions[TRAP_NSIG]; /* indexed by signal number        */
+extern char *g_trap_exit;               /* EXIT (pseudo-signal 0) handler  */
+void trap_run_handler(int signum);      /* execute stored trap action       */
+void trap_run_exit(int code);           /* run EXIT trap then _exit(code)   */
 #endif //SHELL_H

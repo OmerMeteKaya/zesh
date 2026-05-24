@@ -470,7 +470,24 @@ default: {
 
     /* builtin */
     if (is_builtin(p->commands[0].argv[0])) {
-        Command *bcmd    = &p->commands[0];
+        /* expand argv at execution time so variables set by earlier
+           commands in the same list (e.g. read && echo $var) are seen */
+        Command expanded_cmd = p->commands[0];
+        char *expanded_argv[MAX_ARGS + 1];
+        for (int ai = 0; ai < expanded_cmd.argc && ai < MAX_ARGS; ai++) {
+            if (!expanded_cmd.argv[ai]) { expanded_argv[ai] = NULL; continue; }
+            char *ex = expand_word(expanded_cmd.argv[ai], last_exit_status);
+            expanded_argv[ai] = ex ? ex : expanded_cmd.argv[ai];
+        }
+        expanded_argv[expanded_cmd.argc] = NULL;
+        expanded_cmd.argv = expanded_argv;
+        expanded_cmd.infile  = expanded_cmd.infile
+            ? expand_word(expanded_cmd.infile,  last_exit_status)
+            : NULL;
+        expanded_cmd.outfile = expanded_cmd.outfile
+            ? expand_word(expanded_cmd.outfile, last_exit_status)
+            : NULL;
+        Command *bcmd = &expanded_cmd;
         int saved_stdout = -1, saved_stdin = -1;
 
         if (bcmd->outfile) {
@@ -491,7 +508,6 @@ default: {
                 close(fd);
             }
         }
-
         last_status = run_builtin(bcmd);
 
         if (saved_stdout >= 0) {
@@ -503,6 +519,13 @@ default: {
             dup2(saved_stdin, STDIN_FILENO);
             close(saved_stdin);
         }
+        /* free late-expanded argv */
+        for (int ai = 0; ai < expanded_cmd.argc && ai < MAX_ARGS; ai++) {
+            if (expanded_argv[ai] && expanded_argv[ai] != p->commands[0].argv[ai])
+                free(expanded_argv[ai]);
+        }
+        if (expanded_cmd.infile  != p->commands[0].infile)  free(expanded_cmd.infile);
+        if (expanded_cmd.outfile != p->commands[0].outfile) free(expanded_cmd.outfile);
         break;
     }
 
@@ -675,11 +698,6 @@ int execute(Pipeline *p) {
                 job_set_status(pid, JOB_STOPPED);
                 write(STDOUT_FILENO, "\r\n", 2);
                 printf("[%d]+  Stopped\t\t%s\n", job_id, cmd_str);
-                /*
-                 * Loop içinde Ctrl+Z — döngüyü durdur.
-                 * g_loop_control = LOOP_BREAK ile execute_while/for
-                 * bir sonraki iterasyonda durur.
-                 */
                 g_loop_control = LOOP_BREAK;
                 return 0;
             }

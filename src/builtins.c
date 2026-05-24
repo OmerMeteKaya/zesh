@@ -80,6 +80,8 @@ int is_builtin(const char *cmd) {
            (strcmp(cmd, "[[")   == 0) ||
            (strcmp(cmd, "]]")   == 0) ||
            (strcmp(cmd, "((")   == 0) ||
+           (strcmp(cmd, "printf") == 0) ||
+           (strcmp(cmd, "read") == 0) ||
            (strcmp(cmd, "test") == 0) ||
            (strcmp(cmd, "[")    == 0);
 
@@ -664,7 +666,307 @@ int run_builtin(Command *cmd) {
         alias_add(name, value);
         return 0;
     }
-    
+        if (strcmp(builtin_cmd, "printf") == 0) {
+        if (cmd->argc < 2) {
+            fprintf(stderr, "printf: usage: printf format [args...]\n");
+            return 1;
+        }
+        const char *fmt = cmd->argv[1];
+        int argi = 2;
+        /* keep looping over format until all args consumed (bash behavior) */
+        do {
+            for (const char *p = fmt; *p; p++) {
+                if (*p != '%' && *p != '\\') { putchar(*p); continue; }
+                if (*p == '\\') {
+                    p++;
+                    switch (*p) {
+                        case 'n':  putchar('\n'); break;
+                        case 't':  putchar('\t'); break;
+                        case 'r':  putchar('\r'); break;
+                        case '\\': putchar('\\'); break;
+                        case 'a':  putchar('\a'); break;
+                        case 'b':  putchar('\b'); break;
+                        case 'e':  putchar('\033'); break;
+                        case '0': {
+                            /* octal: \0NNN */
+                            unsigned val = 0;
+                            int n = 0;
+                            while (n < 3 && *(p+1) >= '0' && *(p+1) <= '7') {
+                                p++; val = val * 8 + (*p - '0'); n++;
+                            }
+                            putchar((char)val);
+                            break;
+                        }
+                        default: putchar('\\'); putchar(*p); break;
+                    }
+                    continue;
+                }
+                /* '%' — parse specifier */
+                p++;
+                /* flags */
+                int flag_left = 0, flag_zero = 0;
+                while (*p == '-' || *p == '0') {
+                    if (*p == '-') flag_left = 1;
+                    if (*p == '0') flag_zero = 1;
+                    p++;
+                }
+                /* width */
+                int width = 0;
+                while (*p >= '0' && *p <= '9') { width = width*10 + (*p-'0'); p++; }
+                /* precision */
+                int prec = -1;
+                if (*p == '.') {
+                    p++; prec = 0;
+                    while (*p >= '0' && *p <= '9') { prec = prec*10 + (*p-'0'); p++; }
+                }
+                const char *arg = (argi < cmd->argc) ? cmd->argv[argi++] : "";
+                char fmtbuf[64];
+                switch (*p) {
+                    case 's': {
+                        char spec[64];
+                        snprintf(spec, sizeof(spec), "%%%s%s%d%s%ds",
+                            flag_left ? "-" : "",
+                            flag_zero ? "0" : "",
+                            width,
+                            prec >= 0 ? "." : "",
+                            prec >= 0 ? prec : 0);
+                        /* avoid format-not-literal warning */
+                        if (prec >= 0)
+                            printf("%-*.*s", width, prec, arg);
+                        else if (flag_left)
+                            printf("%-*s", width, arg);
+                        else
+                            printf("%*s", width, arg);
+                        (void)fmtbuf;
+                        break;
+                    }
+                    case 'd': case 'i': {
+                        long v = strtol(arg, NULL, 0);
+                        if (flag_left)       printf("%-*ld", width, v);
+                        else if (flag_zero)  printf("%0*ld", width, v);
+                        else                 printf("%*ld",  width, v);
+                        break;
+                    }
+                    case 'u': {
+                        unsigned long v = strtoul(arg, NULL, 0);
+                        if (flag_left)  printf("%-*lu", width, v);
+                        else            printf("%*lu",  width, v);
+                        break;
+                    }
+                    case 'o': {
+                        unsigned long v = strtoul(arg, NULL, 0);
+                        printf(flag_left ? "%-*lo" : "%*lo", width, v);
+                        break;
+                    }
+                    case 'x': {
+                        unsigned long v = strtoul(arg, NULL, 0);
+                        printf(flag_left ? "%-*lx" : "%*lx", width, v);
+                        break;
+                    }
+                    case 'X': {
+                        unsigned long v = strtoul(arg, NULL, 0);
+                        printf(flag_left ? "%-*lX" : "%*lX", width, v);
+                        break;
+                    }
+                    case 'f': case 'e': case 'g': {
+                        double v = strtod(arg, NULL);
+                        char spec2[32];
+                        snprintf(spec2, sizeof(spec2), "%%%s%d%s%d%c",
+                            flag_left ? "-" : (flag_zero ? "0" : ""),
+                            width, prec >= 0 ? "." : "", prec >= 0 ? prec : 6, *p);
+                        printf(spec2, v);
+                        break;
+                    }
+                    case 'c': {
+                        int c = arg[0] ? (unsigned char)arg[0] : 0;
+                        printf(flag_left ? "%-*c" : "%*c", width ? width : 1, c);
+                        break;
+                    }
+                    case 'b': {
+                        /* %b: like %s but interpret backslash escapes */
+                        for (const char *q = arg; *q; q++) {
+                            if (*q == '\\' && *(q+1)) {
+                                q++;
+                                switch (*q) {
+                                    case 'n':  putchar('\n'); break;
+                                    case 't':  putchar('\t'); break;
+                                    case 'r':  putchar('\r'); break;
+                                    case '\\': putchar('\\'); break;
+                                    case 'a':  putchar('\a'); break;
+                                    case 'b':  putchar('\b'); break;
+                                    case 'e':  putchar('\033'); break;
+                                    default:   putchar('\\'); putchar(*q); break;
+                                }
+                            } else {
+                                putchar(*q);
+                            }
+                        }
+                        break;
+                    }
+                    case '%': putchar('%'); argi--; break;
+                    default:  putchar('%'); putchar(*p); break;
+                }
+            }
+        } while (argi < cmd->argc);
+        fflush(stdout);
+        return 0;
+    }
+
+    if (strcmp(builtin_cmd, "read") == 0) {
+        /* parse flags */
+        int raw = 0, silent = 0;
+        const char *prompt = NULL;
+        int timeout = -1;
+        const char *array_name = NULL;
+        int argi = 1;
+
+        while (argi < cmd->argc && cmd->argv[argi][0] == '-') {
+            const char *flag = cmd->argv[argi];
+            if (strcmp(flag, "--") == 0) { argi++; break; }
+            for (int fi = 1; flag[fi]; fi++) {
+                switch (flag[fi]) {
+                    case 'r': raw    = 1; break;
+                    case 's': silent = 1; break;
+                    case 'p':
+                        if (flag[fi+1]) { prompt = flag+fi+1; fi = (int)strlen(flag)-1; }
+                        else if (argi+1 < cmd->argc) prompt = cmd->argv[++argi];
+                        break;
+                    case 't':
+                        if (flag[fi+1]) { timeout = atoi(flag+fi+1); fi = (int)strlen(flag)-1; }
+                        else if (argi+1 < cmd->argc) timeout = atoi(cmd->argv[++argi]);
+                        break;
+                    case 'a':
+                        if (flag[fi+1]) { array_name = flag+fi+1; fi = (int)strlen(flag)-1; }
+                        else if (argi+1 < cmd->argc) array_name = cmd->argv[++argi];
+                        break;
+                    default: break;
+                }
+            }
+            argi++;
+        }
+
+        /* variable names to fill */
+        char **varnames = cmd->argv + argi;
+        int nvarnames   = cmd->argc - argi;
+
+        /* print prompt to stderr (no newline, like bash) */
+        /* switch terminal to cooked mode so input works normally */
+        struct termios old_term, cooked_term;
+        int term_changed = 0;
+        if (isatty(STDIN_FILENO)) {
+            tcgetattr(STDIN_FILENO, &old_term);
+            cooked_term = old_term;
+            cooked_term.c_lflag |= (ICANON | ISIG);
+            if (silent)
+                cooked_term.c_lflag &= ~(tcflag_t)ECHO;
+            else
+                cooked_term.c_lflag |= ECHO;
+            cooked_term.c_iflag |= ICRNL;
+            tcsetattr(STDIN_FILENO, TCSAFLUSH, &cooked_term);
+            tcflush(STDIN_FILENO, TCIFLUSH);
+            term_changed = 1;
+        }
+
+        /* print prompt directly to stderr after mode switch */
+        if (prompt) {
+            write(STDERR_FILENO, prompt, strlen(prompt));
+        }
+
+        /* setup timeout via select() */
+        if (timeout >= 0) {
+            fd_set fds; FD_ZERO(&fds); FD_SET(STDIN_FILENO, &fds);
+            struct timeval tv = { .tv_sec = timeout, .tv_usec = 0 };
+            if (select(STDIN_FILENO+1, &fds, NULL, NULL, &tv) <= 0) {
+                if (term_changed) tcsetattr(STDIN_FILENO, TCSAFLUSH, &old_term);
+                return 1;
+            }
+        }
+
+        /* read one line, respecting raw mode and backslash-continuation */
+        char linebuf[4096];
+        int  pos = 0;
+        int  eof = 0;
+
+        while (1) {
+            char c;
+            ssize_t n = read(STDIN_FILENO, &c, 1);
+            if (n <= 0) { eof = (pos == 0); break; }
+            if (c == '\n') break;
+            if (!raw && c == '\\') {
+                /* backslash-newline: line continuation */
+                char c2;
+                ssize_t n2 = read(STDIN_FILENO, &c2, 1);
+                if (n2 > 0 && c2 == '\n') continue;
+                /* not a continuation — store backslash then c2 */
+                if (pos < (int)sizeof(linebuf)-1) linebuf[pos++] = '\\';
+                if (n2 > 0 && pos < (int)sizeof(linebuf)-1) linebuf[pos++] = c2;
+                continue;
+            }
+            if (pos < (int)sizeof(linebuf)-1) linebuf[pos++] = c;
+        }
+        linebuf[pos] = '\0';
+        
+
+        /* restore to raw mode  */
+        if (term_changed) {
+            /* move to new line so next prompt starts clean */
+            write(STDOUT_FILENO, "\r\n", 2);
+            struct termios raw_back;
+            tcgetattr(STDIN_FILENO, &raw_back);
+            raw_back.c_lflag &= ~(ICANON | ECHO | ISIG);
+            raw_back.c_cc[VMIN]  = 1;
+            raw_back.c_cc[VTIME] = 0;
+            tcsetattr(STDIN_FILENO, TCSAFLUSH, &raw_back);
+        }
+        if (eof) return 1;
+
+        /* -a: split into array */
+        if (array_name) {
+            char *tmp = strdup(linebuf);
+            char *words[1024];
+            int   nw = 0;
+            char *tok = strtok(tmp, " \t");
+            while (tok && nw < 1024) { words[nw++] = tok; tok = strtok(NULL, " \t"); }
+            arr_set_from_list(array_name, words, nw);
+            free(tmp);
+            return 0;
+        }
+
+        /* split line into variables by IFS (default: space/tab) */
+        const char *ifs = getenv("IFS");
+        if (!ifs) ifs = " \t";
+
+        if (nvarnames == 0) {
+            /* no variable names given: default to REPLY */
+            local_var_set("REPLY", linebuf);
+            setenv("REPLY", linebuf, 1);
+            return 0;
+        }
+
+        char *tmp = strdup(linebuf);
+        char *p   = tmp;
+
+        for (int vi = 0; vi < nvarnames; vi++) {
+            /* skip leading IFS */
+            while (*p && strchr(ifs, *p)) p++;
+            if (vi == nvarnames - 1) {
+                /* last variable gets the remainder (trimmed leading IFS) */
+
+                local_var_set(varnames[vi], p);
+                setenv(varnames[vi], p, 1);
+                break;
+            }
+            /* find end of this field */
+            char *start = p;
+            while (*p && !strchr(ifs, *p)) p++;
+            if (*p) *p++ = '\0';
+            local_var_set(varnames[vi], start);
+            setenv(varnames[vi], start, 1);
+        }
+        free(tmp);
+        return 0;
+    }
+
     if (strcmp(builtin_cmd, "source") == 0 ||
         strcmp(builtin_cmd, ".") == 0) {
         if (cmd->argc < 2) {

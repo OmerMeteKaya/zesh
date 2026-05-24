@@ -1,5 +1,5 @@
 cmake_minimum_required(VERSION 4.2)
-project(shell C)
+project(zesh C)
 
 set(CMAKE_C_STANDARD 23)
 
@@ -33,5 +33,4 @@ add_executable(shell
         src/config.c
         include/security.h
         include/signals.h
-        src/debug_signals.c
 )
