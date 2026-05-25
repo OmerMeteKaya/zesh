@@ -210,4 +210,5 @@ extern char *g_trap_actions[TRAP_NSIG]; /* indexed by signal number        */
 extern char *g_trap_exit;               /* EXIT (pseudo-signal 0) handler  */
 void trap_run_handler(int signum);      /* execute stored trap action       */
 void trap_run_exit(int code);           /* run EXIT trap then _exit(code)   */
+int run_script_line(const char *input);
 #endif //SHELL_H

@@ -8,6 +8,7 @@
 #include <signal.h>
 #include <sys/types.h>
 #include "../include/jobs.h"
+#include "../include/shell.h"
 
 //#define _POSIX_C_SOURCE 200809L
 
@@ -25,7 +26,13 @@ static void sigint_handler(int sig) {
     (void)sig;
     g_sigint_received = 1;
     if (fg_pid == 0) {
-        write(STDOUT_FILENO, "\n", 1);
+        /* run trap action if set, otherwise just newline */
+        if (g_trap_actions[SIGINT] && g_trap_actions[SIGINT][0]) {
+            write(STDOUT_FILENO, "\n", 1);
+            run_script_line(g_trap_actions[SIGINT]);
+        } else {
+            write(STDOUT_FILENO, "\n", 1);
+        }
     }
 }
 
@@ -120,4 +127,22 @@ void signals_child(void) {
     sigaction(SIGTTOU, &sa, NULL);
     sigaction(SIGTTIN, &sa, NULL);
     sigaction(SIGCHLD, &sa, NULL);
+}
+
+/* trap action storage */
+char *g_trap_actions[TRAP_NSIG] = {0};
+char *g_trap_exit = NULL;
+
+void trap_run_exit(int code) {
+    if (g_trap_exit && g_trap_exit[0]) {
+        run_script_line(g_trap_exit);
+    }
+    _exit(code);
+}
+
+void trap_generic_handler(int sig) {
+    if (sig < 0 || sig >= TRAP_NSIG) return;
+    if (!g_trap_actions[sig]) return;
+    extern int run_script_line(const char *input);
+    run_script_line(g_trap_actions[sig]);
 }

@@ -19,12 +19,18 @@
 #include "../include/alias.h"
 #include "../include/rc.h"
 #include "../include/shell.h"
+#include "../include/signals.h"
+
 
 extern void  cd_visit(const char *path);
 extern char *cd_frecency_top(const char *query);
 extern void history_close(void);
 extern void alias_free(void);
 extern void plugins_unload(void);
+extern char *g_trap_actions[TRAP_NSIG];
+extern char *g_trap_exit;
+extern void  trap_run_exit(int code);
+extern void trap_generic_handler(int sig);
 
 static void restore_terminal(void) {
     struct termios t;
@@ -73,6 +79,7 @@ int is_builtin(const char *cmd) {
            (strcmp(cmd, "jobs") == 0) ||
            (strcmp(cmd, "fg") == 0) ||
            (strcmp(cmd, "bg") == 0) ||
+           (strcmp(cmd, "trap") == 0) ||
            (strcmp(cmd, "alias") == 0) ||
            (strcmp(cmd, "unalias") == 0) ||
            (strcmp(cmd, "source") == 0) ||
@@ -388,8 +395,6 @@ int run_builtin(Command *cmd) {
         /* 3. Nothing matched */
         fprintf(stderr, "cd: %s: no such file or directory\n", arg);
         return 1;
-    //}
-    //return 0;
 }
 
     if (strcmp(builtin_cmd, "exit") == 0) {
@@ -403,16 +408,21 @@ int run_builtin(Command *cmd) {
             tcsetattr(STDIN_FILENO, TCSAFLUSH, &cooked);
         }
 
-        /* terminal control'ü geri al */
         tcsetpgrp(STDIN_FILENO, getpgrp());
 
-        /* temizlik */
         history_close();
         alias_free();
         plugins_unload();
 
         write(STDOUT_FILENO, "\r\n", 2);
-        _exit(exit_code);
+        /* restore terminal before running EXIT trap */
+        struct termios t;
+        if (tcgetattr(STDIN_FILENO, &t) == 0) {
+            t.c_lflag |= (ICANON | ECHO | ISIG);
+            t.c_iflag |= ICRNL;
+            tcsetattr(STDIN_FILENO, TCSAFLUSH, &t);
+        }
+        trap_run_exit(exit_code);
     }
 
     
@@ -664,6 +674,127 @@ int run_builtin(Command *cmd) {
             }
         }
         alias_add(name, value);
+        return 0;
+    }
+    if (strcmp(builtin_cmd, "trap") == 0) {
+        /* trap with no args: list all active traps */
+        if (cmd->argc == 1) {
+            for (int i = 0; i < TRAP_NSIG; i++) {
+                if (g_trap_actions[i])
+                    printf("trap -- '%s' %d\n", g_trap_actions[i], i);
+            }
+            if (g_trap_exit)
+                printf("trap -- '%s' EXIT\n", g_trap_exit);
+            return 0;
+        }
+
+        /* trap -p [sigspec]: print specific trap */
+        if (strcmp(cmd->argv[1], "-p") == 0) {
+            if (cmd->argc < 3) {
+                /* print all */
+                for (int i = 0; i < TRAP_NSIG; i++) {
+                    if (g_trap_actions[i])
+                        printf("trap -- '%s' %d\n", g_trap_actions[i], i);
+                }
+                if (g_trap_exit)
+                    printf("trap -- '%s' EXIT\n", g_trap_exit);
+                return 0;
+            }
+            const char *spec = cmd->argv[2];
+            if (strcasecmp(spec, "EXIT") == 0 || strcmp(spec, "0") == 0) {
+                if (g_trap_exit) printf("trap -- '%s' EXIT\n", g_trap_exit);
+            } else {
+                int sig = atoi(spec);
+                if (sig > 0 && sig < TRAP_NSIG && g_trap_actions[sig])
+                    printf("trap -- '%s' %d\n", g_trap_actions[sig], sig);
+            }
+            return 0;
+        }
+
+        /* trap '' SIGNAL   — ignore signal
+           trap - SIGNAL    — reset to default
+           trap ACTION SIG [SIG...] */
+        if (cmd->argc < 3) {
+            fprintf(stderr, "trap: usage: trap action signal [signal...]\n");
+            return 1;
+        }
+
+        const char *action = cmd->argv[1];
+        char action_buf[4096];
+        {
+            const char *a = action;
+            int alen = strlen(a);
+            if (alen >= 2 &&
+                ((a[0] == '\'' && a[alen-1] == '\'') ||
+                 (a[0] == '"'  && a[alen-1] == '"'))) {
+                strncpy(action_buf, a + 1, alen - 2);
+                action_buf[alen - 2] = '\0';
+                action = action_buf;
+                 } else {
+                     strncpy(action_buf, a, sizeof(action_buf) - 1);
+                     action_buf[sizeof(action_buf)-1] = '\0';
+                     action = action_buf;
+                 }
+        }
+        int reset = (strcmp(action, "-") == 0);
+
+        for (int si = 2; si < cmd->argc; si++) {
+            const char *spec = cmd->argv[si];
+
+            /* EXIT pseudo-signal */
+            if (strcasecmp(spec, "EXIT") == 0 || strcmp(spec, "0") == 0) {
+                free(g_trap_exit);
+                g_trap_exit = reset ? NULL : strdup(action);
+                continue;
+            }
+
+            /* map signal name → number */
+            int signum = -1;
+            /* numeric */
+            if (spec[0] >= '0' && spec[0] <= '9') {
+                signum = atoi(spec);
+            } else {
+                /* strip optional SIG prefix */
+                const char *name = spec;
+                if (strncasecmp(name, "SIG", 3) == 0) name += 3;
+                /* common signals */
+                struct { const char *n; int s; } map[] = {
+                    {"INT",  SIGINT},  {"TERM", SIGTERM}, {"HUP",  SIGHUP},
+                    {"QUIT", SIGQUIT}, {"USR1", SIGUSR1}, {"USR2", SIGUSR2},
+                    {"PIPE", SIGPIPE}, {"ALRM", SIGALRM}, {"CHLD", SIGCHLD},
+                    {"TSTP", SIGTSTP}, {"CONT", SIGCONT}, {"WINCH",SIGWINCH},
+                    {"KILL", SIGKILL}, {"STOP", SIGSTOP}, {NULL, 0}
+                };
+                for (int mi = 0; map[mi].n; mi++) {
+                    if (strcasecmp(name, map[mi].n) == 0) {
+                        signum = map[mi].s; break;
+                    }
+                }
+            }
+
+            if (signum < 0 || signum >= TRAP_NSIG) {
+                fprintf(stderr, "trap: %s: invalid signal\n", spec);
+                continue;
+            }
+
+            /* update stored action */
+            free(g_trap_actions[signum]);
+            g_trap_actions[signum] = reset ? NULL : strdup(action);
+
+            /* install / restore signal handler */
+            struct sigaction sa;
+            sigemptyset(&sa.sa_mask);
+            sa.sa_flags = SA_RESTART;
+
+            if (reset) {
+                sa.sa_handler = SIG_DFL;
+            } else if (action[0] == '\0') {
+                sa.sa_handler = SIG_IGN;
+            } else {
+                sa.sa_handler = trap_generic_handler;
+            }
+            sigaction(signum, &sa, NULL);
+        }
         return 0;
     }
         if (strcmp(builtin_cmd, "printf") == 0) {

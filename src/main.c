@@ -25,7 +25,7 @@ extern char *read_heredoc(const char *delimiter, int expand);
 
 void signals_init(void);
 void jobs_init(void);
-static int run_script_line(const char *input) {
+int run_script_line(const char *input) {
     if (!input || strlen(input) == 0) return 0;
 
     /* scalar assignment */
