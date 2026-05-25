@@ -31,6 +31,9 @@ extern char *g_trap_actions[TRAP_NSIG];
 extern char *g_trap_exit;
 extern void  trap_run_exit(int code);
 extern void trap_generic_handler(int sig);
+extern int g_opt_errexit;
+extern int g_opt_xtrace;
+extern int g_opt_pipefail;
 
 static void restore_terminal(void) {
     struct termios t;
@@ -72,7 +75,8 @@ int is_builtin(const char *cmd) {
     if (strcmp(cmd, ":")     == 0) return 1;
     return (strcmp(cmd, "cd") == 0) || 
            (strcmp(cmd, "exit") == 0) || 
-           (strcmp(cmd, "export") == 0) || 
+           (strcmp(cmd, "export") == 0) ||
+           (strcmp(cmd, "set") == 0) ||
            (strcmp(cmd, "unset") == 0) || 
            (strcmp(cmd, "pwd") == 0) || 
            (strcmp(cmd, "echo") == 0) ||
@@ -320,6 +324,62 @@ int run_builtin(Command *cmd) {
         g_return_value = cmd->argc > 1 ? atoi(cmd->argv[1]) : 0;
         g_returning    = 1;
         return g_return_value;
+    }
+    if (strcmp(builtin_cmd, "set") == 0) {
+        if (cmd->argc == 1) {
+            /* set with no args: print all variables (basic) */
+            extern char **environ;
+            for (char **e = environ; *e; e++)
+                printf("%s\n", *e);
+            return 0;
+        }
+        for (int i = 1; i < cmd->argc; i++) {
+            const char *arg = cmd->argv[i];
+            /* set -o option */
+            if (strcmp(arg, "-o") == 0 && i + 1 < cmd->argc) {
+                i++;
+                if (strcmp(cmd->argv[i], "pipefail") == 0)
+                    g_opt_pipefail = 1;
+                else if (strcmp(cmd->argv[i], "errexit") == 0)
+                    g_opt_errexit = 1;
+                else if (strcmp(cmd->argv[i], "xtrace") == 0)
+                    g_opt_xtrace = 1;
+                else if (strcmp(cmd->argv[i], "noglob") == 0)
+                    ; /* TODO */
+                continue;
+            }
+            /* set +o option */
+            if (strcmp(arg, "+o") == 0 && i + 1 < cmd->argc) {
+                i++;
+                if (strcmp(cmd->argv[i], "pipefail") == 0)
+                    g_opt_pipefail = 0;
+                else if (strcmp(cmd->argv[i], "errexit") == 0)
+                    g_opt_errexit = 0;
+                else if (strcmp(cmd->argv[i], "xtrace") == 0)
+                    g_opt_xtrace = 0;
+                continue;
+            }
+            /* set -e / -x / -u etc */
+            if (arg[0] == '-' || arg[0] == '+') {
+                int on = (arg[0] == '-');
+                for (int fi = 1; arg[fi]; fi++) {
+                    switch (arg[fi]) {
+                        case 'e': g_opt_errexit  = on; break;
+                        case 'x': g_opt_xtrace   = on; break;
+                        case 'u': /* TODO: unset var error */ break;
+                        default: break;
+                    }
+                }
+                continue;
+            }
+            /* set -- args: set positional parameters */
+            if (strcmp(arg, "--") == 0) {
+                positional_set(cmd->argv + i + 1,
+                               cmd->argc - i - 1);
+                break;
+            }
+        }
+        return 0;
     }
     if (strcmp(builtin_cmd, "cd") == 0) {
         const char *target = NULL;

@@ -581,6 +581,20 @@ int main(int argc, char *argv[]) {
                 if (exec_status == 130) {
                     write(STDOUT_FILENO, "\r\n", 2);
                 }
+                if (g_opt_errexit && exec_status != 0 &&
+                    exec_status != 130) {
+                    /* restore terminal then run EXIT trap and quit */
+                    struct termios t;
+                    if (tcgetattr(STDIN_FILENO, &t) == 0) {
+                        t.c_lflag |= (ICANON | ECHO | ISIG);
+                        t.c_iflag |= ICRNL;
+                        tcsetattr(STDIN_FILENO, TCSAFLUSH, &t);
+                    }
+                    history_close();
+                    alias_free();
+                    plugins_unload();
+                    trap_run_exit(exec_status);
+                    }
                 g_sigint_received = 0;
                 g_interrupt_loop  = 0;
 

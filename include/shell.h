@@ -211,4 +211,10 @@ extern char *g_trap_exit;               /* EXIT (pseudo-signal 0) handler  */
 void trap_run_handler(int signum);      /* execute stored trap action       */
 void trap_run_exit(int code);           /* run EXIT trap then _exit(code)   */
 int run_script_line(const char *input);
+
+/* shell options (set -e / -x / -o pipefail) */
+extern int g_opt_errexit;   /* set -e  */
+extern int g_opt_xtrace;    /* set -x  */
+extern int g_opt_pipefail;  /* set -o pipefail */
+
 #endif //SHELL_H

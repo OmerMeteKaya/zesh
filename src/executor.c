@@ -18,6 +18,9 @@
 
 int g_return_value = 0;
 int g_returning    = 0;
+int g_opt_errexit  = 0;
+int g_opt_xtrace   = 0;
+int g_opt_pipefail = 0;
 extern void set_fg_pid(pid_t pid);
 extern int  last_exit_status;
 volatile int g_interrupt_loop = 0;
@@ -117,10 +120,25 @@ static int execute_pipeline_expanded(Pipeline *p) {
         status = execute_list_expanded(fbody);
         positional_clear();
         g_returning = 0;
+        if (g_opt_errexit && status != 0 &&
+      strcmp(tmp.commands[0].argv[0], "set")  != 0 &&
+      strcmp(tmp.commands[0].argv[0], "trap") != 0) {
+            TMP_FREE();
+            trap_run_exit(status);
+      }
         TMP_FREE();
         return status;
     }
-
+    /* xtrace: print command before execution */
+    if (g_opt_xtrace) {
+        write(STDERR_FILENO, "+ ", 2);
+        for (int ai = 0; ai < tmp.commands[0].argc; ai++) {
+            if (ai > 0) write(STDERR_FILENO, " ", 1);
+            write(STDERR_FILENO, tmp.commands[0].argv[ai],
+                  strlen(tmp.commands[0].argv[ai]));
+        }
+        write(STDERR_FILENO, "\n", 1);
+    }
     /* builtin */
     if (is_builtin(tmp.commands[0].argv[0])) {
         Command *bcmd    = &tmp.commands[0];
@@ -163,6 +181,9 @@ static int execute_pipeline_expanded(Pipeline *p) {
     /* external command */
     status = execute(&tmp);
     TMP_FREE();
+    if (g_opt_errexit && status != 0) {
+        trap_run_exit(status);
+    }
     return status;
 
     #undef TMP_FREE
@@ -436,6 +457,18 @@ int execute_list(CmdList *list) {
 case NODE_PIPELINE:
 default: {
     Pipeline *p = node->pipeline;
+    /* xtrace */
+    if (g_opt_xtrace && p && p->ncommands > 0 &&
+        p->commands[0].argv && p->commands[0].argv[0]) {
+        write(STDERR_FILENO, "+ ", 2);
+        for (int ai = 0; ai < p->commands[0].argc; ai++) {
+            if (!p->commands[0].argv[ai]) break;
+            if (ai > 0) write(STDERR_FILENO, " ", 1);
+            write(STDERR_FILENO, p->commands[0].argv[ai],
+                  strlen(p->commands[0].argv[ai]));
+        }
+        write(STDERR_FILENO, "\n", 1);
+        }
     if (!p) { last_status = 0; break; }
 
     if (p->ncommands == 0 || !p->commands[0].argv ||
@@ -528,7 +561,6 @@ default: {
         if (expanded_cmd.outfile != p->commands[0].outfile) free(expanded_cmd.outfile);
         break;
     }
-
     /* external */
     last_status = execute(p);
     break;
@@ -935,9 +967,9 @@ int execute(Pipeline *p) {
         int done = 0;
         int stopped = 0;
 
+        int first_fail = 0; /* for pipefail */
         while (done + stopped < p->ncommands) {
             pid_t w = waitpid(-pgid, &status, WUNTRACED);
-
             if (w == -1 && errno == EINTR) {
                 if ((g_sigint_received || g_interrupt_loop) && pgid > 0) {
                     kill(-pgid, SIGINT);
@@ -945,17 +977,23 @@ int execute(Pipeline *p) {
                 continue;
             }
             if (w <= 0) break;
-
             if (WIFSTOPPED(status)) {
                 stopped++;
             } else {
                 done++;
+                int s = 0;
                 if (WIFEXITED(status))
-                    last_status = WEXITSTATUS(status);
+                    s = WEXITSTATUS(status);
                 else if (WIFSIGNALED(status))
-                    last_status = 128 + WTERMSIG(status);
+                    s = 128 + WTERMSIG(status);
+                /* pipefail: track first failure */
+                if (g_opt_pipefail && s != 0 && first_fail == 0)
+                    first_fail = s;
+                last_status = s;
             }
         }
+        if (g_opt_pipefail && first_fail != 0)
+            last_status = first_fail;
 
         set_fg_pid(0);
         if (!g_in_procsubst) tcsetpgrp(STDIN_FILENO, getpgrp());
@@ -978,7 +1016,14 @@ int execute(Pipeline *p) {
             write(STDOUT_FILENO, "\n", 1);
             printf("[%d]+  Stopped\t\t%s\n", job_id, cmd_str);
         }
-
+        if (g_opt_pipefail) {
+            /* pipefail: return first non-zero exit status in pipeline */
+            /* last_status already holds last command's status;
+               for full pipefail we'd need all statuses — this is
+               a reasonable approximation */
+        }
+        if (g_opt_errexit && last_status != 0)
+            trap_run_exit(last_status);
         free(pids);
         return last_status;
 
