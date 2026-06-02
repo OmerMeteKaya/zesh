@@ -1442,17 +1442,20 @@ static CmdList *parse_list_internal(Token *toks, int ntokens) {
                  strcmp(toks[i].value,"case")==0 || strcmp(toks[i].value,"select")==0 ||
                  strcmp(toks[i].value,"{")==0))
                 break;
-
-            /* stop at | when next token is a compound keyword (pipe to compound) */
-            if (tt == TOK_PIPE && depth_br == 0 && depth_pr == 0 &&
-                i + 1 < ntokens && toks[i+1].type == TOK_WORD &&
-                toks[i+1].value && !toks[i+1].quoted) {
-                const char *nv = toks[i+1].value;
-                if (strcmp(nv,"if")==0    || strcmp(nv,"while")==0  ||
-                    strcmp(nv,"until")==0 || strcmp(nv,"for")==0    ||
-                    strcmp(nv,"case")==0  || strcmp(nv,"select")==0 ||
-                    strcmp(nv,"{")==0)
-                    break;
+            
+            if (tt == TOK_PIPE) {
+                if (i + 1 < ntokens) {
+                    Token *nxt = &toks[i + 1];
+                    if (nxt->type == TOK_LPAREN ||
+                        (nxt->type == TOK_WORD && nxt->value && !nxt->quoted &&
+                         (strcmp(nxt->value,"if")==0    || strcmp(nxt->value,"while")==0  ||
+                          strcmp(nxt->value,"until")==0 || strcmp(nxt->value,"for")==0    ||
+                          strcmp(nxt->value,"case")==0  || strcmp(nxt->value,"select")==0))) {
+                        break;
+                          }
+                }
+                i++;
+                continue;
             }
 
             i++;

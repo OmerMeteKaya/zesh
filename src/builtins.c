@@ -621,7 +621,7 @@ int run_builtin(Command *cmd) {
         if (!no_newline) {
             putchar('\n');
         }
-        
+        fflush(stdout);
         return 0;
     }
     
