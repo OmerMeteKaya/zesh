@@ -1,7 +1,5 @@
-//
-// Created by mete on 23.04.2026.
-//
-
+// SPDX-License-Identifier: GPL-3.0-or-later
+// Copyright (C) 2026 Ömer Mete Kaya
 #define _GNU_SOURCE
 #include <errno.h>
 #include <unistd.h>
@@ -138,6 +136,11 @@ static int execute_pipeline_expanded(Pipeline *p) {
             free(tmp.commands);
             return 1;
         }
+
+        /* copy fd_redirs from original (file fields are shared, not duped) */
+        dst->nfd_redirs = src->nfd_redirs;
+        for (int ri = 0; ri < src->nfd_redirs; ri++)
+            dst->fd_redirs[ri] = src->fd_redirs[ri];
     }
 
     #define TMP_FREE() do { \
@@ -199,11 +202,44 @@ static int execute_pipeline_expanded(Pipeline *p) {
         }
         write(STDERR_FILENO, "\n", 1);
     }
+    /* Special: exec ${N}>&- in execute_pipeline_expanded path (e.g. inside if body).
+     * Detect before applying fd_redirs to override the src fd. */
+    if (tmp.commands[0].argv[0] &&
+        strcmp(tmp.commands[0].argv[0], "exec") == 0 &&
+        tmp.commands[0].argc == 2 && tmp.commands[0].argv[1]) {
+        const char *a2 = tmp.commands[0].argv[1];
+        int all_d = (*a2 != '\0');
+        for (const char *pp = a2; *pp; pp++) if (*pp < '0' || *pp > '9') { all_d = 0; break; }
+        if (all_d) {
+            int fn2 = atoi(a2);
+            for (int ri = 0; ri < tmp.commands[0].nfd_redirs; ri++) {
+                FdRedir *r = &tmp.commands[0].fd_redirs[ri];
+                int src2 = fn2;  /* use the numeric arg as src */
+                if (r->dst_fd == -1) close(src2);
+                else if (r->dst_fd >= 0) dup2(r->dst_fd, src2);
+                else if (r->dst_fd == -2 && r->file) {
+                    char *ef2 = expand_word(r->file, last_exit_status);
+                    const char *ts2 = ef2 ? ef2 : r->file;
+                    if (strcmp(ts2, "-") == 0) close(src2);
+                    else {
+                        char *ep2 = NULL; long fdn2 = strtol(ts2, &ep2, 10);
+                        if (ep2 && *ep2 == '\0' && fdn2 >= 0) dup2((int)fdn2, src2);
+                    }
+                    free(ef2);
+                }
+            }
+            TMP_FREE();
+            return 0;
+        }
+    }
+
     /* builtin */
     if (is_builtin(tmp.commands[0].argv[0])) {
         Command *bcmd    = &tmp.commands[0];
         int saved_stdout = -1, saved_stdin = -1;
+        int saved_fds_b[MAX_FD_REDIRS]; int nsaved_b = 0;
 
+        fflush(stdout);
         if (bcmd->outfile) {
             int flags = O_WRONLY | O_CREAT |
                         (bcmd->append ? O_APPEND : O_TRUNC);
@@ -222,9 +258,51 @@ static int execute_pipeline_expanded(Pipeline *p) {
                 close(fd);
             }
         }
+        /* apply fd_redirs for builtins */
+        for (int ri = 0; ri < bcmd->nfd_redirs && nsaved_b < MAX_FD_REDIRS; ri++) {
+            FdRedir *r = &bcmd->fd_redirs[ri];
+            int src = r->src_fd >= 0 ? r->src_fd
+                      : (r->is_input ? STDIN_FILENO : STDOUT_FILENO);
+            saved_fds_b[nsaved_b++] = dup(src);
+            if (r->dst_fd == -1) {
+                close(src);
+            } else if (r->dst_fd == -2 && r->file) {
+                char *ef = expand_word(r->file, last_exit_status);
+                const char *ts = ef ? ef : r->file;
+                char *ep = NULL; long fdn = strtol(ts, &ep, 10);
+                if (ep && *ep == '\0' && fdn >= 0) dup2((int)fdn, src);
+                else if (strcmp(ts, "-") == 0) close(src);
+                else {
+                    int flags2 = r->is_input ? O_RDONLY
+                                : (O_WRONLY|O_CREAT|(r->append?O_APPEND:O_TRUNC));
+                    int fd = open(ts, flags2, 0644);
+                    if (fd >= 0) { dup2(fd, src); close(fd); }
+                }
+                free(ef);
+            } else if (r->dst_fd >= 0) {
+                dup2(r->dst_fd, src);
+            } else if (r->file) {
+                char *ef = expand_word(r->file, last_exit_status);
+                const char *ts = ef ? ef : r->file;
+                int flags2 = r->is_input ? O_RDONLY
+                            : (O_WRONLY|O_CREAT|(r->append?O_APPEND:O_TRUNC));
+                int fd = open(ts, flags2, 0644);
+                if (fd >= 0) { dup2(fd, src); close(fd); }
+                free(ef);
+            }
+        }
 
         status = run_builtin(bcmd);
 
+        /* restore fd_redirs */
+        for (int ri = nsaved_b - 1; ri >= 0; ri--) {
+            if (saved_fds_b[ri] < 0) continue;
+            FdRedir *r = &bcmd->fd_redirs[ri];
+            int src = r->src_fd >= 0 ? r->src_fd
+                      : (r->is_input ? STDIN_FILENO : STDOUT_FILENO);
+            dup2(saved_fds_b[ri], src);
+            close(saved_fds_b[ri]);
+        }
         if (saved_stdout >= 0) {
             fflush(stdout);
             dup2(saved_stdout, STDOUT_FILENO);
@@ -248,58 +326,112 @@ static int execute_pipeline_expanded(Pipeline *p) {
 
     #undef TMP_FREE
 }
+/* Helper: execute a single CmdNode in the current process */
+static int execute_node_inline(CmdNode *node) {
+    switch (node->type) {
+        case NODE_IF:       return execute_if(node->if_node);
+        case NODE_WHILE:    return execute_while(node->while_node);
+        case NODE_CASE:     return execute_case(node->case_node);
+        case NODE_FOR:      return execute_for(node->for_node);
+        case NODE_SELECT:   return execute_select(node->select_node);
+        case NODE_TIME:     return execute_time_node(node->time_node);
+        case NODE_COPROC:   return execute_coproc(node->coproc_node);
+        case NODE_SUBSHELL: return execute_subshell(node->subshell_node);
+        case NODE_PIPELINE:
+        default:
+            if (node->pipeline) return execute_pipeline_expanded(node->pipeline);
+            return 0;
+    }
+}
+
 static int execute_list_expanded(CmdList *list) {
     if (!list || list->count == 0) return 0;
 
     int last_status = 0;
+    int pipe_read_fd = -1;  /* pending pipe read end from OP_PIPE producer */
+    pid_t pipe_pid   = -1;  /* pid of the forked pipeline producer */
 
     for (int i = 0; i < list->count; i++) {
         CmdNode *node = &list->nodes[i];
 
         if (i > 0) {
             ListOp prev_op = list->nodes[i - 1].op;
-            if (prev_op == OP_AND && last_status != 0) continue;
-            if (prev_op == OP_OR  && last_status == 0) continue;
+            if (prev_op == OP_AND && last_status != 0) {
+                if (pipe_read_fd >= 0) { close(pipe_read_fd); pipe_read_fd = -1; }
+                continue;
+            }
+            if (prev_op == OP_OR  && last_status == 0) {
+                if (pipe_read_fd >= 0) { close(pipe_read_fd); pipe_read_fd = -1; }
+                continue;
+            }
         }
         if (g_sigint_received || g_interrupt_loop) {
+            if (pipe_read_fd >= 0) close(pipe_read_fd);
             return 130;
         }
 
+        /* If current node's op is OP_PIPE and the next is a compound/pipeline,
+         * fork the current node as a producer with stdout → pipe. */
+        if (node->op == OP_PIPE && i + 1 < list->count) {
+            int pfd[2];
+            if (pipe(pfd) < 0) { last_status = 1; continue; }
+            /* set up stdin for producer from previous pipe if any */
+            int prod_saved_stdin = -1;
+            if (pipe_read_fd >= 0) {
+                prod_saved_stdin = dup(STDIN_FILENO);
+                dup2(pipe_read_fd, STDIN_FILENO);
+                close(pipe_read_fd);
+                pipe_read_fd = -1;
+            }
+            fflush(NULL);
+            pid_t pid = fork();
+            if (pid == 0) {
+                signals_child();
+                dup2(pfd[1], STDOUT_FILENO);
+                close(pfd[0]); close(pfd[1]);
+                int s = execute_node_inline(node);
+                _exit(s);
+            }
+            /* parent */
+            close(pfd[1]);
+            pipe_read_fd = pfd[0];
+            pipe_pid = pid;
+            if (prod_saved_stdin >= 0) {
+                dup2(prod_saved_stdin, STDIN_FILENO);
+                close(prod_saved_stdin);
+            }
+            /* skip normal execution — node ran in child */
+            if (node->negate) last_status = (last_status == 0) ? 1 : 0;
+            last_exit_status = last_status;
+            continue;
+        }
 
-        switch (node->type) {
-            case NODE_IF:
-                last_status = execute_if(node->if_node);
-                break;
-            case NODE_WHILE:
-                last_status = execute_while(node->while_node);
-                break;
-            case NODE_CASE:
-                last_status = execute_case(node->case_node);
-                break;
-            case NODE_FOR:
-                last_status = execute_for(node->for_node);
-                break;
-            case NODE_SELECT:
-                last_status = execute_select(node->select_node);
-                break;
-            case NODE_TIME:
-                last_status = execute_time_node(node->time_node);
-                break;
-            case NODE_COPROC:
-                last_status = execute_coproc(node->coproc_node);
-                break;
-            case NODE_SUBSHELL:
-                last_status = execute_subshell(node->subshell_node);
-                break;
-            case NODE_PIPELINE:
-            default:
-                if (node->pipeline)
-                    last_status = execute_pipeline_expanded(node->pipeline);
-                break;
+        /* Apply pending pipe from previous OP_PIPE producer */
+        int saved_stdin = -1;
+        if (pipe_read_fd >= 0) {
+            saved_stdin = dup(STDIN_FILENO);
+            dup2(pipe_read_fd, STDIN_FILENO);
+            close(pipe_read_fd);
+            pipe_read_fd = -1;
+        }
+
+        last_status = execute_node_inline(node);
+
+        /* restore stdin and wait for producer */
+        if (saved_stdin >= 0) {
+            dup2(saved_stdin, STDIN_FILENO);
+            close(saved_stdin);
+        }
+        if (pipe_pid > 0) {
+            waitpid(pipe_pid, NULL, 0);
+            pipe_pid = -1;
         }
 
         if (node->negate) last_status = (last_status == 0) ? 1 : 0;
         last_exit_status = last_status;
+        if (g_opt_errexit && last_status != 0 && !g_returning) {
+            trap_run_exit(last_status);
+        }
         if (g_loop_control != LOOP_NORMAL) return last_status;
         if (g_returning) return g_return_value;
     }
@@ -419,6 +551,35 @@ static int execute_while(WhileNode *node) {
     if (!node) return 1;
     int status = 0;
 
+    /* apply redirections on the while block */
+    int wh_saved_stdin = -1, wh_saved_stdout = -1;
+    int wh_saved_fds[MAX_FD_REDIRS]; int wh_nfds = 0;
+    if (node->infile) {
+        int fd = open(node->infile, O_RDONLY);
+        if (fd >= 0) { wh_saved_stdin = dup(STDIN_FILENO); dup2(fd, STDIN_FILENO); close(fd); }
+    }
+    if (node->outfile) {
+        int flags = O_WRONLY|O_CREAT|(node->append ? O_APPEND : O_TRUNC);
+        int fd = open(node->outfile, flags, 0644);
+        if (fd >= 0) { wh_saved_stdout = dup(STDOUT_FILENO); dup2(fd, STDOUT_FILENO); close(fd); }
+    }
+    for (int ri = 0; ri < node->nfd_redirs && wh_nfds < MAX_FD_REDIRS; ri++) {
+        FdRedir *r = &node->fd_redirs[ri];
+        int src = r->src_fd >= 0 ? r->src_fd : (r->is_input ? STDIN_FILENO : STDOUT_FILENO);
+        wh_saved_fds[wh_nfds++] = dup(src);
+        if (r->dst_fd == -1) close(src);
+        else if (r->dst_fd >= 0) dup2(r->dst_fd, src);
+        else if (r->file) {
+            char *ef = expand_word(r->file, last_exit_status);
+            const char *ts = ef ? ef : r->file;
+            char *ep = NULL; long fdn = strtol(ts, &ep, 10);
+            if (ep && *ep == '\0' && fdn >= 0) dup2((int)fdn, src);
+            else if (strcmp(ts, "-") == 0) close(src);
+            else { int f2 = open(ts, r->is_input?O_RDONLY:(O_WRONLY|O_CREAT|O_TRUNC),0644); if(f2>=0){dup2(f2,src);close(f2);} }
+            free(ef);
+        }
+    }
+
     while (1) {
         if (g_sigint_received || g_interrupt_loop) {
             g_sigint_received = 0;
@@ -452,11 +613,50 @@ static int execute_while(WhileNode *node) {
             g_loop_control = LOOP_NORMAL; continue;
         }
     }
+    /* restore redirections */
+    for (int ri = wh_nfds - 1; ri >= 0; ri--) {
+        if (wh_saved_fds[ri] < 0) continue;
+        FdRedir *r = &node->fd_redirs[ri];
+        int src = r->src_fd >= 0 ? r->src_fd : (r->is_input ? STDIN_FILENO : STDOUT_FILENO);
+        dup2(wh_saved_fds[ri], src); close(wh_saved_fds[ri]);
+    }
+    if (wh_saved_stdout >= 0) { dup2(wh_saved_stdout, STDOUT_FILENO); close(wh_saved_stdout); }
+    if (wh_saved_stdin  >= 0) { dup2(wh_saved_stdin,  STDIN_FILENO);  close(wh_saved_stdin);  }
+
     return status;
 }
 
 static int execute_select(SelectNode *node) {
     if (!node) return 1;
+
+    /* apply redirections */
+    int saved_stdin = -1, saved_stdout = -1;
+    int saved_fds_sel[MAX_FD_REDIRS]; int nsel = 0;
+    if (node->infile) {
+        int fd = open(node->infile, O_RDONLY);
+        if (fd >= 0) { saved_stdin = dup(STDIN_FILENO); dup2(fd, STDIN_FILENO); close(fd); }
+    }
+    if (node->outfile) {
+        int flags = O_WRONLY|O_CREAT|(node->append ? O_APPEND : O_TRUNC);
+        int fd = open(node->outfile, flags, 0644);
+        if (fd >= 0) { saved_stdout = dup(STDOUT_FILENO); dup2(fd, STDOUT_FILENO); close(fd); }
+    }
+    for (int ri = 0; ri < node->nfd_redirs && nsel < MAX_FD_REDIRS; ri++) {
+        FdRedir *r = &node->fd_redirs[ri];
+        int src = r->src_fd >= 0 ? r->src_fd : (r->is_input ? STDIN_FILENO : STDOUT_FILENO);
+        saved_fds_sel[nsel++] = dup(src);
+        if (r->dst_fd == -1) close(src);
+        else if (r->dst_fd >= 0) dup2(r->dst_fd, src);
+        else if (r->file) {
+            char *ef = expand_word(r->file, last_exit_status);
+            const char *ts = ef ? ef : r->file;
+            char *ep = NULL; long fdn = strtol(ts, &ep, 10);
+            if (ep && *ep == '\0' && fdn >= 0) dup2((int)fdn, src);
+            else if (strcmp(ts, "-") == 0) close(src);
+            else { int f2 = open(ts, r->is_input?O_RDONLY:(O_WRONLY|O_CREAT|O_TRUNC),0644); if(f2>=0){dup2(f2,src);close(f2);} }
+            free(ef);
+        }
+    }
 
     /* expand word list */
     char *words[256];
@@ -483,11 +683,20 @@ static int execute_select(SelectNode *node) {
         fflush(stderr);
 
         char line[256] = {0};
-        if (!fgets(line, sizeof(line), stdin)) {
+        int li = 0;
+        char ch;
+        ssize_t nr2;
+        int got_any = 0;
+        while (li < (int)sizeof(line) - 1 && (nr2 = read(STDIN_FILENO, &ch, 1)) == 1) {
+            got_any = 1;
+            if (ch == '\n') break;
+            line[li++] = ch;
+        }
+        if (!got_any) {
             write(STDOUT_FILENO, "\n", 1);
             break;
         }
-        line[strcspn(line, "\n")] = '\0';
+        line[li] = '\0';
 
         int sel = atoi(line);
         if (sel >= 1 && sel <= nwords) {
@@ -508,11 +717,22 @@ static int execute_select(SelectNode *node) {
         if (g_loop_control == LOOP_CONTINUE) { g_loop_control = LOOP_NORMAL; continue; }
     }
     for (int i = 0; i < nwords; i++) free(words[i]);
+
+    /* restore redirections */
+    for (int ri = nsel - 1; ri >= 0; ri--) {
+        if (saved_fds_sel[ri] < 0) continue;
+        FdRedir *r = &node->fd_redirs[ri];
+        int src = r->src_fd >= 0 ? r->src_fd : (r->is_input ? STDIN_FILENO : STDOUT_FILENO);
+        dup2(saved_fds_sel[ri], src); close(saved_fds_sel[ri]);
+    }
+    if (saved_stdout >= 0) { dup2(saved_stdout, STDOUT_FILENO); close(saved_stdout); }
+    if (saved_stdin  >= 0) { dup2(saved_stdin,  STDIN_FILENO);  close(saved_stdin);  }
+
     return status;
 }
 
 static int execute_coproc(CoprocNode *node) {
-    if (!node || !node->pipeline) return 1;
+    if (!node || (!node->pipeline && !node->body)) return 1;
 
     /* two pipes: shell→coproc (stdin of coproc) and coproc→shell (stdout of coproc) */
     int to_coproc[2];    /* shell writes [1], coproc reads [0] */
@@ -534,8 +754,11 @@ static int execute_coproc(CoprocNode *node) {
         dup2(from_coproc[1], STDOUT_FILENO);
         close(to_coproc[0]);  close(to_coproc[1]);
         close(from_coproc[0]); close(from_coproc[1]);
-        /* run the pipeline */
-        execute(node->pipeline);
+        /* run the pipeline or group body */
+        if (node->body)
+            execute_list_expanded(node->body);
+        else
+            execute(node->pipeline);
         _exit(0);
     }
 
@@ -564,7 +787,9 @@ static int execute_coproc(CoprocNode *node) {
 
     /* add to background jobs */
     char cmd_str[256] = {0};
-    if (node->pipeline && node->pipeline->ncommands > 0 &&
+    if (node->body) {
+        strncpy(cmd_str, node->name ? node->name : "coproc", sizeof(cmd_str)-1);
+    } else if (node->pipeline && node->pipeline->ncommands > 0 &&
         node->pipeline->commands[0].argv &&
         node->pipeline->commands[0].argv[0]) {
         strncpy(cmd_str, node->pipeline->commands[0].argv[0], sizeof(cmd_str)-1);
@@ -702,6 +927,28 @@ static int execute_subshell(SubshellNode *node) {
     if (pid < 0) { perror("subshell"); return 1; }
     if (pid == 0) {
         signals_child();
+        g_is_subshell = 1;
+        /* apply redirections in child */
+        if (node->outfile) {
+            int flags = O_WRONLY|O_CREAT|(node->append?O_APPEND:O_TRUNC);
+            int fd = open(node->outfile, flags, 0644);
+            if (fd >= 0) { dup2(fd, STDOUT_FILENO); close(fd); }
+        }
+        if (node->infile) {
+            int fd = open(node->infile, O_RDONLY);
+            if (fd >= 0) { dup2(fd, STDIN_FILENO); close(fd); }
+        }
+        for (int ri = 0; ri < node->nfd_redirs; ri++) {
+            FdRedir *r = &node->fd_redirs[ri];
+            int src = r->src_fd >= 0 ? r->src_fd : STDOUT_FILENO;
+            if (r->dst_fd == -1) { close(src); }
+            else if (r->file) {
+                int flags = r->is_input ? O_RDONLY :
+                    (O_WRONLY|O_CREAT|(r->append?O_APPEND:O_TRUNC));
+                int fd = open(r->file, flags, 0644);
+                if (fd >= 0) { dup2(fd, src); close(fd); }
+            } else if (r->dst_fd >= 0) { dup2(r->dst_fd, src); }
+        }
         int status = execute_list_expanded(node->body);
         fflush(stdout);
         _exit(status);
@@ -721,6 +968,8 @@ int execute_list(CmdList *list) {
     if (!list || list->count == 0) return 0;
 
     int last_status = 0;
+    int pipe_read_fd_l = -1;
+    pid_t pipe_pid_l   = -1;
 
     for (int i = 0; i < list->count; i++) {
         CmdNode *node = &list->nodes[i];
@@ -728,11 +977,55 @@ int execute_list(CmdList *list) {
         /* --- && / || short-circuit --- */
         if (i > 0) {
             ListOp prev_op = list->nodes[i - 1].op;
-            if (prev_op == OP_AND && last_status != 0) continue;
-            if (prev_op == OP_OR  && last_status == 0) continue;
+            if (prev_op == OP_AND && last_status != 0) {
+                if (pipe_read_fd_l >= 0) { close(pipe_read_fd_l); pipe_read_fd_l = -1; }
+                continue;
+            }
+            if (prev_op == OP_OR  && last_status == 0) {
+                if (pipe_read_fd_l >= 0) { close(pipe_read_fd_l); pipe_read_fd_l = -1; }
+                continue;
+            }
         }
         if (g_sigint_received || g_interrupt_loop) {
+            if (pipe_read_fd_l >= 0) close(pipe_read_fd_l);
             return 130;
+        }
+
+        /* OP_PIPE: fork producer, pipe stdout to next node's stdin */
+        if (node->op == OP_PIPE && i + 1 < list->count) {
+            int pfd2[2];
+            if (pipe(pfd2) < 0) { last_status = 1; continue; }
+            int prod_saved_stdin2 = -1;
+            if (pipe_read_fd_l >= 0) {
+                prod_saved_stdin2 = dup(STDIN_FILENO);
+                dup2(pipe_read_fd_l, STDIN_FILENO);
+                close(pipe_read_fd_l); pipe_read_fd_l = -1;
+            }
+            fflush(NULL);
+            pid_t pid2 = fork();
+            if (pid2 == 0) {
+                signals_child();
+                dup2(pfd2[1], STDOUT_FILENO);
+                close(pfd2[0]); close(pfd2[1]);
+                int s2 = execute_node_inline(node);
+                _exit(s2);
+            }
+            close(pfd2[1]);
+            pipe_read_fd_l = pfd2[0];
+            pipe_pid_l = pid2;
+            if (prod_saved_stdin2 >= 0) {
+                dup2(prod_saved_stdin2, STDIN_FILENO);
+                close(prod_saved_stdin2);
+            }
+            continue;
+        }
+
+        /* Apply pending pipe from OP_PIPE producer */
+        int saved_stdin_l = -1;
+        if (pipe_read_fd_l >= 0) {
+            saved_stdin_l = dup(STDIN_FILENO);
+            dup2(pipe_read_fd_l, STDIN_FILENO);
+            close(pipe_read_fd_l); pipe_read_fd_l = -1;
         }
 
         /* --- dispatch on node type --- */
@@ -814,10 +1107,30 @@ default: {
             free(ein);
         }
 
+        /* Special case: exec ${N}>&- where ${N} expands to digits only —
+         * treat as an fd redirect, not a command.  Detect before applying
+         * fd_redirs so we can override the default src fd. */
+        int exec_fd_redir_only = 0;
+        int exec_fd_num = -1;
+        if (ec->argc == 2 && eargv[1]) {
+            const char *a = eargv[1];
+            int all_digits = (*a != '\0');
+            for (const char *p2 = a; *p2; p2++)
+                if (*p2 < '0' || *p2 > '9') { all_digits = 0; break; }
+            if (all_digits) { exec_fd_redir_only = 1; exec_fd_num = atoi(eargv[1]); }
+        }
+
         /* apply fd_redirs permanently */
         for (int ri = 0; ri < ec->nfd_redirs; ri++) {
             FdRedir *r = &ec->fd_redirs[ri];
-            int src = r->src_fd >= 0 ? r->src_fd : (r->is_input ? STDIN_FILENO : STDOUT_FILENO);
+            /* when exec_fd_num is set (from variable like exec ${N}>&-),
+             * use fd_num as the src override instead of the parsed default */
+            int src;
+            if (exec_fd_redir_only && exec_fd_num >= 0)
+                src = exec_fd_num;
+            else
+                src = r->src_fd >= 0 ? r->src_fd
+                      : (r->is_input ? STDIN_FILENO : STDOUT_FILENO);
             if (r->dst_fd == -1) {
                 close(src);
             } else if (r->dst_fd == -2 && r->file) {
@@ -842,6 +1155,12 @@ default: {
                 if (fd >= 0) { dup2(fd, src); close(fd); }
                 free(ef);
             }
+        }
+
+        if (exec_fd_redir_only) {
+            for (int ai = 0; ai < ec->argc; ai++) free(eargv[ai]);
+            last_status = 0;
+            break;
         }
 
         /* process replacement: exec cmd [args] */
@@ -1012,6 +1331,17 @@ default: {
     break;
 }
         } /* switch */
+
+        /* restore stdin if it was redirected from pipe */
+        if (saved_stdin_l >= 0) {
+            dup2(saved_stdin_l, STDIN_FILENO);
+            close(saved_stdin_l);
+            saved_stdin_l = -1;
+        }
+        if (pipe_pid_l > 0) {
+            waitpid(pipe_pid_l, NULL, 0);
+            pipe_pid_l = -1;
+        }
 
         if (node->negate) last_status = (last_status == 0) ? 1 : 0;
         last_exit_status = last_status;

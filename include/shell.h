@@ -1,6 +1,5 @@
-//
-// Created by mete on 23.04.2026.
-//
+// SPDX-License-Identifier: GPL-3.0-or-later
+// Copyright (C) 2026 Ömer Mete Kaya
 
 #ifndef SHELL_H
 #define SHELL_H
@@ -45,6 +44,8 @@ typedef enum {
     TOK_REDIR_DUP_OUT,    /* N>&M or N>&- */
     TOK_REDIR_DUP_IN,     /* N<&M or N<&- */
     TOK_REDIR_CLOSE,      /* N>&- or N<&- (close) */
+    TOK_LPAREN,           /* ( */
+    TOK_RPAREN,           /* ) */
 } TokenType;
 
 typedef struct {
@@ -85,7 +86,8 @@ typedef enum {
     OP_NONE,
     OP_AND,    /* && */
     OP_OR,     /* || */
-    OP_SEMI    /* ;  */
+    OP_SEMI,   /* ;  */
+    OP_PIPE    /* | */
 } ListOp;
 typedef enum {
     NODE_PIPELINE,
@@ -115,6 +117,11 @@ typedef struct {
     char   **words;
     int      nwords;
     CmdList *body;
+    char    *infile;
+    char    *outfile;
+    int      append;
+    FdRedir  fd_redirs[MAX_FD_REDIRS];
+    int      nfd_redirs;
 } SelectNode;
 
 typedef struct {
@@ -123,11 +130,17 @@ typedef struct {
 
 typedef struct {
     char     *name;      /* optional name, default "COPROC" */
-    Pipeline *pipeline;
+    Pipeline *pipeline;  /* simple pipeline: coproc cmd args */
+    CmdList  *body;      /* group body: coproc NAME { ... } */
 } CoprocNode;
 
 typedef struct {
     CmdList *body;
+    char    *infile;
+    char    *outfile;
+    int      append;
+    FdRedir  fd_redirs[MAX_FD_REDIRS];
+    int      nfd_redirs;
 } SubshellNode;
 
 struct CmdNode {
@@ -172,6 +185,11 @@ struct WhileNode {
     CmdList *condition;
     CmdList *body;
     int      is_until;
+    char    *outfile;
+    char    *infile;
+    int      append;
+    FdRedir  fd_redirs[MAX_FD_REDIRS];
+    int      nfd_redirs;
 };
 
 struct ForNode {
@@ -289,6 +307,8 @@ void scope_pop(void);    /* restore on function exit */
 /* return control */
 extern int g_return_value;
 extern int g_returning;
+
+extern int g_is_subshell;
 
 /* history.c — smart cd */
 void  cd_visit(const char *path);

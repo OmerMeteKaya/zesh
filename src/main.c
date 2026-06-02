@@ -1,6 +1,5 @@
-//
-// Created by mete on 23.04.2026.
-//
+// SPDX-License-Identifier: GPL-3.0-or-later
+// Copyright (C) 2026 Ömer Mete Kaya
 
 #include <ctype.h>
 extern int last_exit_status;
@@ -8,6 +7,7 @@ extern char *read_heredoc(const char *delimiter, int expand);
 
 #include <time.h>
 #include <sys/stat.h>
+#include <fcntl.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -248,11 +248,33 @@ int main(int argc, char *argv[]) {
     setpgid(shell_pgid, shell_pgid);
     tcsetpgrp(STDIN_FILENO, shell_pgid);
     if (argc >= 2) {
-        FILE *f = fopen(argv[1], "r");
-        if (!f) {
+        /* Read entire file into memory to avoid FILE* descriptor closure issues */
+        int fd = open(argv[1], O_RDONLY);
+        if (fd < 0) {
             fprintf(stderr, "zesh: %s: cannot open file\n", argv[1]);
             return 1;
         }
+        struct stat st;
+        if (fstat(fd, &st) < 0) {
+            close(fd);
+            fprintf(stderr, "zesh: %s: cannot stat file\n", argv[1]);
+            return 1;
+        }
+
+        char *script_content = malloc(st.st_size + 1);
+        if (!script_content) {
+            close(fd);
+            fprintf(stderr, "zesh: cannot allocate memory for script\n");
+            return 1;
+        }
+        ssize_t nread = read(fd, script_content, st.st_size);
+        close(fd);
+        if (nread != st.st_size) {
+            free(script_content);
+            fprintf(stderr, "zesh: error reading script file\n");
+            return 1;
+        }
+        script_content[st.st_size] = '\0';
 
         char line[MAX_INPUT];
         char collected[65536] = {0};
@@ -260,7 +282,17 @@ int main(int argc, char *argv[]) {
         int  depth      = 0;
         int  exit_status = 0;
 
-        while (fgets(line, sizeof(line), f)) {
+        /* Parse script content line by line */
+        const char *pos = script_content;
+        while (*pos) {
+            /* Extract next line */
+            const char *line_end = strchr(pos, '\n');
+            int line_len = line_end ? (line_end - pos) : strlen(pos);
+            if (line_len >= (int)sizeof(line)) line_len = sizeof(line) - 1;
+            strncpy(line, pos, line_len);
+            line[line_len] = '\0';
+            pos += line_len;
+            if (*pos == '\n') pos++;  /* skip newline */
             g_current_lineno++;
             char *p = line;
             while (*p == ' ' || *p == '\t') p++;
@@ -315,7 +347,7 @@ int main(int argc, char *argv[]) {
             exit_status = run_script_line(line);
         }
 
-        fclose(f);
+        free(script_content);
         return exit_status;
     }
 /* ---------------------------------------------------------------- */

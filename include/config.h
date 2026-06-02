@@ -1,3 +1,6 @@
+// SPDX-License-Identifier: GPL-3.0-or-later
+// Copyright (C) 2026 Ömer Mete Kaya
+
 #ifndef CONFIG_H
 #define CONFIG_H
 

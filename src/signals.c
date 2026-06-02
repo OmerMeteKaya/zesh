@@ -1,6 +1,5 @@
-//
-// Created by mete on 23.04.2026.
-//
+// SPDX-License-Identifier: GPL-3.0-or-later
+// Copyright (C) 2026 Ömer Mete Kaya
 
 #define _GNU_SOURCE
 #include <stdio.h>
@@ -11,7 +10,6 @@
 #include "../include/jobs.h"
 #include "../include/shell.h"
 
-//#define _POSIX_C_SOURCE 200809L
 
 extern int ps_pid_forget(pid_t pid);
 volatile sig_atomic_t g_sigint_received = 0;

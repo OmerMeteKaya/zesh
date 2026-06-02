@@ -1,7 +1,5 @@
-//
-// highlight.c — syntax error highlighting eklendi
-// Orijinal renklendirme sistemi korundu, üstüne hata tespiti eklendi.
-//
+// SPDX-License-Identifier: GPL-3.0-or-later
+// Copyright (C) 2026 Ömer Mete Kaya
 
 #include "../include/highlight.h"
 #include "../include/config.h"

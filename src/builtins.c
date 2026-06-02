@@ -1,6 +1,5 @@
-//
-// Created by mete on 23.04.2026.
-//
+// SPDX-License-Identifier: GPL-3.0-or-later
+// Copyright (C) 2026 Ömer Mete Kaya
 
 #define _GNU_SOURCE
 #include <stdio.h>
@@ -530,26 +529,25 @@ int run_builtin(Command *cmd) {
         int exit_code = (cmd->argc > 1) ? atoi(cmd->argv[1]) : 0;
 
         /* raw mode → cooked */
-        struct termios cooked;
-        if (tcgetattr(STDIN_FILENO, &cooked) == 0) {
-            cooked.c_lflag |= (ICANON | ECHO | ISIG);
-            cooked.c_iflag |= ICRNL;
-            tcsetattr(STDIN_FILENO, TCSAFLUSH, &cooked);
-        }
-
-        tcsetpgrp(STDIN_FILENO, getpgrp());
-
-        history_close();
-        alias_free();
-        plugins_unload();
-
-        write(STDOUT_FILENO, "\r\n", 2);
-        /* restore terminal before running EXIT trap */
-        struct termios t;
-        if (tcgetattr(STDIN_FILENO, &t) == 0) {
-            t.c_lflag |= (ICANON | ECHO | ISIG);
-            t.c_iflag |= ICRNL;
-            tcsetattr(STDIN_FILENO, TCSAFLUSH, &t);
+        extern int g_is_subshell;
+        if (!g_is_subshell) {
+            struct termios cooked;
+            if (tcgetattr(STDIN_FILENO, &cooked) == 0) {
+                cooked.c_lflag |= (ICANON | ECHO | ISIG);
+                cooked.c_iflag |= ICRNL;
+                tcsetattr(STDIN_FILENO, TCSAFLUSH, &cooked);
+            }
+            tcsetpgrp(STDIN_FILENO, getpgrp());
+            history_close();
+            alias_free();
+            plugins_unload();
+            write(STDOUT_FILENO, "\r\n", 2);
+            struct termios t;
+            if (tcgetattr(STDIN_FILENO, &t) == 0) {
+                t.c_lflag |= (ICANON | ECHO | ISIG);
+                t.c_iflag |= ICRNL;
+                tcsetattr(STDIN_FILENO, TCSAFLUSH, &t);
+            }
         }
         trap_run_exit(exit_code);
     }
@@ -1493,7 +1491,7 @@ int run_builtin(Command *cmd) {
         if (argi < cmd->argc)
             array_name = cmd->argv[argi];
 
-        /* read lines from stdin */
+        /* read lines from stdin using raw read() to avoid stdio buffer issues */
         char line[4096];
         char **lines = NULL;
         int   nread  = 0;
@@ -1505,11 +1503,12 @@ int run_builtin(Command *cmd) {
         while (1) {
             if (nlines >= 0 && nread >= nlines) break;
             int li = 0;
-            int c;
-            while ((c = fgetc(stdin)) != EOF) {
+            char ch;
+            ssize_t nr;
+            while ((nr = read(STDIN_FILENO, &ch, 1)) == 1) {
                 if (li < (int)sizeof(line) - 1)
-                    line[li++] = (char)c;
-                if ((char)c == delim_char) break;
+                    line[li++] = ch;
+                if (ch == delim_char) break;
             }
             if (li == 0) break;
             /* trim delimiter if -t flag is set */

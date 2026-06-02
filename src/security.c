@@ -1,6 +1,5 @@
-//
-// Created by mete on 23.04.2026.
-//
+// SPDX-License-Identifier: GPL-3.0-or-later
+// Copyright (C) 2026 Ömer Mete Kaya
 
 #include "../include/security.h"
 #include "../include/config.h"
@@ -51,8 +50,8 @@ static const DangerRule rules[] = {
     { "bash -i >& /dev/tcp", 0, SEC_WARN, "Reverse shell detected!" },
 
     /* History/audit tampering */
-    { "rm ~/.mysh_history", 0, SEC_WARN, "Shell history will be deleted!" },
-    { "> ~/.mysh_history",  0, SEC_WARN, "Shell history will be cleared!" },
+    { "rm ~/.zesh_history", 0, SEC_WARN, "Shell history will be deleted!" },
+    { "> ~/.zesh_history",  0, SEC_WARN, "Shell history will be cleared!" },
     { NULL, 0, SEC_OK, NULL }
 };
 

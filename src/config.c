@@ -1,6 +1,5 @@
-//
-// Created by mete on 3.05.2026.
-//
+// SPDX-License-Identifier: GPL-3.0-or-later
+// Copyright (C) 2026 Ömer Mete Kaya
 #include "../include/config.h"
 #include <stdio.h>
 #include <stdlib.h>
@@ -24,7 +23,7 @@ ShellConfig g_config = {
     .security_warn      = 1,
     .security_block     = 0,
     .security_audit     = 1,
-    .security_audit_log = "~/.mysh/audit.log",
+    .security_audit_log = "~/.zesh/audit.log",
     .hl_color_keyword  = "magenta",
     .hl_color_string   = "green",
     .hl_color_variable = "yellow",
@@ -132,7 +131,7 @@ void config_save(const char *path) {
     FILE *f = fopen(path, "w");
     if (!f) return;
 
-    fprintf(f, "# mysh configuration\n");
+    fprintf(f, "# zesh configuration\n");
     fprintf(f, "# Generated automatically — edit as needed\n\n");
 
     fprintf(f, "# Prompt\n");

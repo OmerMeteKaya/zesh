@@ -1,6 +1,5 @@
-//
-// Created by mete on 23.04.2026.
-//
+// SPDX-License-Identifier: GPL-3.0-or-later
+// Copyright (C) 2026 Ömer Mete Kaya
 
 #include <stdio.h>
 #include <stdlib.h>
@@ -370,6 +369,8 @@ void cmdlist_free(CmdList *list) {
             WhileNode *wn = n->while_node;
             cmdlist_free(wn->condition);
             cmdlist_free(wn->body);
+            free(wn->outfile); free(wn->infile);
+            for (int ri = 0; ri < wn->nfd_redirs; ri++) free(wn->fd_redirs[ri].file);
             free(wn);
 
         } else if (n->type == NODE_FOR && n->for_node) {
@@ -381,6 +382,7 @@ void cmdlist_free(CmdList *list) {
             free(fn);
         } else if (n->type == NODE_COPROC && n->coproc_node) {
             pipeline_free(n->coproc_node->pipeline);
+            cmdlist_free(n->coproc_node->body);
             free(n->coproc_node->name);
             free(n->coproc_node);
         } else if (n->type == NODE_SELECT && n->select_node) {
@@ -389,6 +391,8 @@ void cmdlist_free(CmdList *list) {
             for (int w = 0; w < sn->nwords; w++) free(sn->words[w]);
             free(sn->words);
             cmdlist_free(sn->body);
+            free(sn->infile); free(sn->outfile);
+            for (int ri = 0; ri < sn->nfd_redirs; ri++) free(sn->fd_redirs[ri].file);
             free(sn);
         } else if (n->type == NODE_TIME && n->time_node) {
             pipeline_free(n->time_node->pipeline);
@@ -403,8 +407,12 @@ void cmdlist_free(CmdList *list) {
             free(cn->items);
             free(cn);
         } else if (n->type == NODE_SUBSHELL && n->subshell_node) {
-            cmdlist_free(n->subshell_node->body);
-            free(n->subshell_node);
+            SubshellNode *sn = n->subshell_node;
+            cmdlist_free(sn->body);
+            free(sn->infile);
+            free(sn->outfile);
+            for (int fi = 0; fi < sn->nfd_redirs; fi++) free(sn->fd_redirs[fi].file);
+            free(sn);
         }
 
     }
@@ -897,6 +905,40 @@ static SelectNode *parse_select(Token *toks, int ntokens, int *consumed) {
     if (done_pos < 0) goto error_sel;
     node->body = parse_list_internal(toks + i, done_pos - i);
     i = done_pos + 1;
+    /* collect redirections after done */
+    while (i < ntokens) {
+        TokenType rtt = toks[i].type;
+        if (rtt == TOK_REDIR_IN || rtt == TOK_REDIR_OUT || rtt == TOK_REDIR_APP ||
+            rtt == TOK_REDIR_FD_OUT || rtt == TOK_REDIR_FD_APP || rtt == TOK_REDIR_FD_IN ||
+            rtt == TOK_REDIR_DUP_OUT || rtt == TOK_REDIR_DUP_IN) {
+            if (rtt == TOK_REDIR_IN && i + 1 < ntokens) {
+                node->infile = strdup(toks[i+1].value ? toks[i+1].value : "");
+                i += 2;
+            } else if (rtt == TOK_REDIR_OUT && i + 1 < ntokens) {
+                node->outfile = strdup(toks[i+1].value ? toks[i+1].value : "");
+                node->append = 0;
+                i += 2;
+            } else if (rtt == TOK_REDIR_APP && i + 1 < ntokens) {
+                node->outfile = strdup(toks[i+1].value ? toks[i+1].value : "");
+                node->append = 1;
+                i += 2;
+            } else if ((rtt == TOK_REDIR_FD_OUT || rtt == TOK_REDIR_FD_APP ||
+                        rtt == TOK_REDIR_FD_IN || rtt == TOK_REDIR_DUP_OUT ||
+                        rtt == TOK_REDIR_DUP_IN) && node->nfd_redirs < MAX_FD_REDIRS) {
+                FdRedir *r = &node->fd_redirs[node->nfd_redirs++];
+                r->src_fd = toks[i].value ? atoi(toks[i].value) : -1;
+                r->is_input = (rtt == TOK_REDIR_FD_IN || rtt == TOK_REDIR_DUP_IN);
+                r->append = (rtt == TOK_REDIR_FD_APP);
+                r->dst_fd = -2; r->file = NULL;
+                i++;
+                if (i < ntokens && toks[i].type == TOK_WORD && toks[i].value) {
+                    if (strcmp(toks[i].value, "-") == 0) { r->dst_fd = -1; }
+                    else { r->file = strdup(toks[i].value); }
+                    i++;
+                }
+            } else break;
+        } else break;
+    }
     *consumed = i;
     return node;
 
@@ -946,7 +988,7 @@ static CmdList *parse_list_internal(Token *toks, int ntokens) {
                 }
             }
             if (body_end < 0) {
-                fprintf(stderr, "mysh: syntax error: expected ')'\n");
+                fprintf(stderr, "zesh: syntax error: expected ')'\n");
                 goto error;
             }
             CmdList *sbody = parse_list_internal(toks + body_start,
@@ -954,12 +996,54 @@ static CmdList *parse_list_internal(Token *toks, int ntokens) {
             SubshellNode *sn = calloc(1, sizeof(SubshellNode));
             if (!sn) { cmdlist_free(sbody); goto error; }
             sn->body = sbody;
+            sn->infile = NULL;
+            sn->outfile = NULL;
+            sn->append = 0;
+            sn->nfd_redirs = 0;
             int j = body_end + 1;
+
+            /* collect redirections after ) */
+            while (j < ntokens) {
+                TokenType rtt = toks[j].type;
+                if (rtt == TOK_REDIR_OUT || rtt == TOK_REDIR_APP) {
+                    j++;
+                    if (j < ntokens && toks[j].value) {
+                        free(sn->outfile);
+                        sn->outfile = strdup(toks[j].value);
+                        sn->append  = (rtt == TOK_REDIR_APP);
+                        j++;
+                    }
+                } else if (rtt == TOK_REDIR_IN) {
+                    j++;
+                    if (j < ntokens && toks[j].value) {
+                        free(sn->infile);
+                        sn->infile = strdup(toks[j].value);
+                        j++;
+                    }
+                } else if ((rtt == TOK_REDIR_FD_OUT || rtt == TOK_REDIR_FD_APP ||
+                            rtt == TOK_REDIR_FD_IN  || rtt == TOK_REDIR_DUP_OUT ||
+                            rtt == TOK_REDIR_DUP_IN) &&
+                           sn->nfd_redirs < MAX_FD_REDIRS && toks[j].value) {
+                    FdRedir *r = &sn->fd_redirs[sn->nfd_redirs++];
+                    r->src_fd   = atoi(toks[j].value);
+                    r->is_input = (rtt==TOK_REDIR_DUP_IN||rtt==TOK_REDIR_FD_IN);
+                    r->append   = (rtt==TOK_REDIR_FD_APP);
+                    r->dst_fd   = -2; r->file = NULL;
+                    j++;
+                    if (j < ntokens && toks[j].value) {
+                        if (strcmp(toks[j].value,"-")==0) r->dst_fd=-1;
+                        else { r->file=strdup(toks[j].value); r->dst_fd=-2; }
+                        j++;
+                    }
+                } else break;
+            }
+
             ListOp sop = OP_NONE;
             if (j < ntokens) {
                 if      (toks[j].type == TOK_AND)  { sop = OP_AND;  j++; }
                 else if (toks[j].type == TOK_OR)   { sop = OP_OR;   j++; }
                 else if (toks[j].type == TOK_SEMI) { sop = OP_SEMI; j++; }
+                else if (toks[j].type == TOK_PIPE) { sop = OP_PIPE; j++; }
             }
             CmdNode snode = {0};
             snode.type         = NODE_SUBSHELL;
@@ -1136,10 +1220,44 @@ static CmdList *parse_list_internal(Token *toks, int ntokens) {
             node.op       = OP_NONE;
             node.negate   = negate;
             int j = i + consumed;
+            /* collect redirections after done */
+            while (j < ntokens) {
+                TokenType rtt = toks[j].type;
+                if (rtt == TOK_REDIR_OUT || rtt == TOK_REDIR_APP) {
+                    j++;
+                    if (j < ntokens && toks[j].value) {
+                        free(wn->outfile);
+                        wn->outfile = strdup(toks[j].value);
+                        wn->append  = (rtt == TOK_REDIR_APP);
+                        j++;
+                    }
+                } else if (rtt == TOK_REDIR_IN) {
+                    j++;
+                    if (j < ntokens && toks[j].value) {
+                        free(wn->infile); wn->infile = strdup(toks[j].value); j++;
+                    }
+                } else if ((rtt==TOK_REDIR_FD_OUT||rtt==TOK_REDIR_FD_APP||
+                            rtt==TOK_REDIR_FD_IN||rtt==TOK_REDIR_DUP_OUT||
+                            rtt==TOK_REDIR_DUP_IN) &&
+                           wn->nfd_redirs < MAX_FD_REDIRS && toks[j].value) {
+                    FdRedir *r = &wn->fd_redirs[wn->nfd_redirs++];
+                    r->src_fd = atoi(toks[j].value);
+                    r->is_input = (rtt==TOK_REDIR_DUP_IN||rtt==TOK_REDIR_FD_IN);
+                    r->append = (rtt==TOK_REDIR_FD_APP);
+                    r->dst_fd = -2; r->file = NULL;
+                    j++;
+                    if (j < ntokens && toks[j].value) {
+                        if (strcmp(toks[j].value,"-")==0) r->dst_fd=-1;
+                        else { r->file=strdup(toks[j].value); r->dst_fd=-2; }
+                        j++;
+                    }
+                } else break;
+            }
             if (j < ntokens) {
                 if      (toks[j].type == TOK_AND)  { node.op = OP_AND;  j++; }
                 else if (toks[j].type == TOK_OR)   { node.op = OP_OR;   j++; }
                 else if (toks[j].type == TOK_SEMI) { node.op = OP_SEMI; j++; }
+                else if (toks[j].type == TOK_PIPE) { node.op = OP_PIPE; j++; }
             }
             if (!cmdlist_push(list, &capacity, node)) goto error;
             i = j;
@@ -1205,7 +1323,7 @@ static CmdList *parse_list_internal(Token *toks, int ntokens) {
             continue;
         }
 
-        /* coproc keyword: coproc [NAME] pipeline */
+        /* coproc keyword: coproc [NAME] pipeline  or  coproc NAME { ... } */
         if (is_keyword(&toks[i], "coproc")) {
             i++;
             /* optional name: if next token is a word not followed by a redirection */
@@ -1218,17 +1336,39 @@ static CmdList *parse_list_internal(Token *toks, int ntokens) {
                 cp_name = strdup(toks[i].value);
                 i++;
             }
-            int cp_start = i;
-            while (i < ntokens) {
-                TokenType tt = toks[i].type;
-                if (tt == TOK_AND || tt == TOK_OR || tt == TOK_SEMI) break;
-                i++;
+            Pipeline *cp_pl   = NULL;
+            CmdList  *cp_body = NULL;
+            /* coproc NAME { body } — group command body */
+            if (i < ntokens && toks[i].type == TOK_WORD && toks[i].value &&
+                strcmp(toks[i].value, "{") == 0) {
+                i++; /* skip { */
+                int depth2 = 1, body_start = i;
+                while (i < ntokens && depth2 > 0) {
+                    if (toks[i].type == TOK_WORD && toks[i].value) {
+                        if (strcmp(toks[i].value, "{") == 0) depth2++;
+                        else if (strcmp(toks[i].value, "}") == 0) depth2--;
+                    }
+                    if (depth2 > 0) i++;
+                    else break;
+                }
+                int body_end = i;
+                if (i < ntokens) i++; /* skip } */
+                if (body_end > body_start)
+                    cp_body = parse_list(toks + body_start, body_end - body_start);
+            } else {
+                int cp_start = i;
+                while (i < ntokens) {
+                    TokenType tt = toks[i].type;
+                    if (tt == TOK_AND || tt == TOK_OR || tt == TOK_SEMI) break;
+                    i++;
+                }
+                cp_pl = (i > cp_start) ? parse(toks + cp_start, i - cp_start) : NULL;
             }
-            Pipeline *cp_pl = (i > cp_start) ? parse(toks + cp_start, i - cp_start) : NULL;
             CoprocNode *cn  = calloc(1, sizeof(CoprocNode));
-            if (!cn) { free(cp_name); pipeline_free(cp_pl); goto error; }
+            if (!cn) { free(cp_name); pipeline_free(cp_pl); cmdlist_free(cp_body); goto error; }
             cn->name     = cp_name;
             cn->pipeline = cp_pl;
+            cn->body     = cp_body;
             ListOp cp_op = OP_NONE;
             if (i < ntokens) {
                 if      (toks[i].type == TOK_AND)  { cp_op = OP_AND;  i++; }
@@ -1241,7 +1381,7 @@ static CmdList *parse_list_internal(Token *toks, int ntokens) {
             cnode.op         = cp_op;
             cnode.negate     = negate;
             if (!cmdlist_push(list, &capacity, cnode)) {
-                pipeline_free(cp_pl); free(cp_name); free(cn); goto error;
+                pipeline_free(cp_pl); cmdlist_free(cp_body); free(cp_name); free(cn); goto error;
             }
             continue;
         }
@@ -1303,6 +1443,18 @@ static CmdList *parse_list_internal(Token *toks, int ntokens) {
                  strcmp(toks[i].value,"{")==0))
                 break;
 
+            /* stop at | when next token is a compound keyword (pipe to compound) */
+            if (tt == TOK_PIPE && depth_br == 0 && depth_pr == 0 &&
+                i + 1 < ntokens && toks[i+1].type == TOK_WORD &&
+                toks[i+1].value && !toks[i+1].quoted) {
+                const char *nv = toks[i+1].value;
+                if (strcmp(nv,"if")==0    || strcmp(nv,"while")==0  ||
+                    strcmp(nv,"until")==0 || strcmp(nv,"for")==0    ||
+                    strcmp(nv,"case")==0  || strcmp(nv,"select")==0 ||
+                    strcmp(nv,"{")==0)
+                    break;
+            }
+
             i++;
         }
 
@@ -1313,10 +1465,10 @@ static CmdList *parse_list_internal(Token *toks, int ntokens) {
 
         ListOp op = OP_NONE;
         if (i < ntokens) {
-            if      (toks[i].type == TOK_AND)  op = OP_AND;
-            else if (toks[i].type == TOK_OR)   op = OP_OR;
-            else if (toks[i].type == TOK_SEMI) op = OP_SEMI;
-            if (op != OP_NONE) i++;
+            if      (toks[i].type == TOK_AND)  { op = OP_AND;  i++; }
+            else if (toks[i].type == TOK_OR)   { op = OP_OR;   i++; }
+            else if (toks[i].type == TOK_SEMI) { op = OP_SEMI; i++; }
+            else if (toks[i].type == TOK_PIPE) { op = OP_PIPE; i++; }
         }
         if (seg_len == 0 && op == OP_NONE) {
             if (i < ntokens) {

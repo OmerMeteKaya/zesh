@@ -1,6 +1,5 @@
-//
-// Created by mete on 24.04.2026.
-//
+// SPDX-License-Identifier: GPL-3.0-or-later
+// Copyright (C) 2026 Ömer Mete Kaya
 
 #ifndef JOBS_H
 #define JOBS_H

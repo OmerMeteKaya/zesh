@@ -1,6 +1,5 @@
-//
-// Created by mete on 3.05.2026.
-//
+// SPDX-License-Identifier: GPL-3.0-or-later
+// Copyright (C) 2026 Ömer Mete Kaya
 
 #ifndef SIGNALS_H
 #define SIGNALS_H

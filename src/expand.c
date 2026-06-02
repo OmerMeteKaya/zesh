@@ -1,6 +1,5 @@
-//
-// Created by mete on 26.04.2026.
-//
+// SPDX-License-Identifier: GPL-3.0-or-later
+// Copyright (C) 2026 Ömer Mete Kaya
 
 #define _GNU_SOURCE
 #include "../include/shell.h"
@@ -22,6 +21,7 @@
 #define MAX_FUNCS 64
 int g_current_lineno = 0;
 int g_expand_error = 0;
+int g_is_subshell = 0;
 typedef struct {
     char  name[64];
     char *values[MAX_ARRAY_SIZE];
@@ -1138,10 +1138,14 @@ static char *run_command_substitution(const char *cmd_str) {
     close(pipefd[0]);
     int status = 0;
     waitpid(pid, &status, 0);
-    g_expand_error = 0;
     if (WIFEXITED(status)) {
         extern int last_exit_status;
         last_exit_status = WEXITSTATUS(status);
+        if (WEXITSTATUS(status) != 0) {
+            g_expand_error = 1;
+        }
+    } else {
+        g_expand_error = 0;
     }
 
     buf[total] = '\0';
@@ -1442,6 +1446,11 @@ char *expand_word(const char *word, int last_exit_status) {
                 if (cmd_str) {
                     char *output = run_command_substitution(cmd_str);
                     free(cmd_str);
+                    if (g_expand_error) {
+                        if (output) free(output);
+                        free(buf);
+                        return NULL;
+                    }
                     if (output) {
                         append_str(&buf, &len, &capacity, output);
                         free(output);
@@ -1584,6 +1593,36 @@ char *expand_word(const char *word, int last_exit_status) {
                     }
                     /* restore p if we consumed ':' but no modifier */
                     if (colon) p--;
+                }
+
+                /* substring: ${var:offset:length} */
+                if (*p == ':' && (*(p+1) >= '0' && *(p+1) <= '9')) {
+                    p++;  /* skip : */
+                    /* parse offset */
+                    long offset = 0;
+                    int neg_off = 0;
+                    if (*p == '-') { neg_off=1; p++; }
+                    while (*p >= '0' && *p <= '9') offset = offset*10 + (*p++ - '0');
+                    long length = -1;
+                    if (*p == ':') {
+                        p++;
+                        length = 0;
+                        while (*p >= '0' && *p <= '9') length = length*10 + (*p++ - '0');
+                    }
+                    if (*p == '}') p++;
+                    const char *v = var_get(var_name);
+                    if (v) {
+                        size_t vlen = strlen(v);
+                        if (neg_off) offset = (long)vlen - offset;
+                        if (offset < 0) offset = 0;
+                        if ((size_t)offset > vlen) offset = vlen;
+                        size_t avail = vlen - offset;
+                        size_t take = (length < 0) ? avail : (size_t)length;
+                        if (take > avail) take = avail;
+                        char *sub = strndup(v + offset, take);
+                        if (sub) { append_str(&buf, &len, &capacity, sub); free(sub); }
+                    }
+                    continue;
                 }
 
                 /* array index: ${arr[N]} ${arr[@]} ${arr[*]} */

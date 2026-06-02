@@ -1,7 +1,5 @@
-//
-// Created by mete on 27.04.2026.
-// Multiline support added with minimal changes to original render logic.
-//
+// SPDX-License-Identifier: GPL-3.0-or-later
+// Copyright (C) 2026 Ömer Mete Kaya
 
 #include <sys/ioctl.h>
 #include <termios.h>

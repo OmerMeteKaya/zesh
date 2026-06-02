@@ -1,6 +1,5 @@
-//
-// Created by mete on 29.04.2026.
-//
+// SPDX-License-Identifier: GPL-3.0-or-later
+// Copyright (C) 2026 Ömer Mete Kaya
 
 #include "../include/rc.h"
 #include "../include/alias.h"
