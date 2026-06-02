@@ -1,0 +1,114 @@
+name: Zesh CI
+
+on:
+  push:
+    branches: [ main, dev ]
+  pull_request:
+    branches: [ main ]
+
+jobs:
+  build-and-test:
+    name: ${{ matrix.os }} / ${{ matrix.compiler }} / -std=${{ matrix.std }}
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, ubuntu-24.04-arm, macos-latest, macos-13]
+        compiler: [gcc, clang]
+        std: [c11, c17, c23]
+        exclude:
+          - os: macos-latest
+            compiler: gcc
+          - os: macos-13
+            compiler: gcc
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install dependencies (Ubuntu)
+        if: startsWith(matrix.os, 'ubuntu')
+        run: sudo apt-get install -y libsqlite3-dev
+
+      - name: Install dependencies (macOS)
+        if: startsWith(matrix.os, 'macos')
+        run: brew install sqlite3
+
+      - name: Build release
+        run: |
+          ${{ matrix.compiler }} -Wall -std=${{ matrix.std }} \
+            -Iinclude src/*.c -o zesh \
+            -lsqlite3 -ldl
+        env:
+          CC: ${{ matrix.compiler }}
+
+      - name: Build debug (ASAN+UBSAN)
+        run: |
+          ${{ matrix.compiler }} -Wall -std=${{ matrix.std }} \
+            -g -fsanitize=address,undefined \
+            -Iinclude src/*.c -o zesh_debug \
+            -lsqlite3 -ldl
+        env:
+          CC: ${{ matrix.compiler }}
+
+      - name: Run parity tests
+        run: |
+          ./zesh test_parite.sh > /tmp/test_out.txt 2>/tmp/test_err.txt
+          cat /tmp/test_out.txt
+          if grep -q "0 FAIL" /tmp/test_out.txt; then
+            echo "All parity tests passed"
+          else
+            echo "PARITY TESTS FAILED"
+            cat /tmp/test_err.txt
+            exit 1
+          fi
+
+      - name: Run ASAN/UBSAN tests
+        run: |
+          ./zesh_debug test_parite.sh \
+            > /tmp/asan_out.txt 2>/tmp/asan_err.txt || true
+          if ! grep -q "0 FAIL" /tmp/asan_out.txt; then
+            echo "ASAN tests FAILED"
+            cat /tmp/asan_out.txt
+            exit 1
+          fi
+          if grep -q "ERROR: AddressSanitizer\|runtime error:" /tmp/asan_err.txt; then
+            echo "ASAN/UBSAN errors detected:"
+            cat /tmp/asan_err.txt
+            exit 1
+          fi
+          echo "No ASAN/UBSAN errors"
+
+      - name: Compiler warnings report
+        run: |
+          ${{ matrix.compiler }} -Wall -Wextra -std=${{ matrix.std }} \
+            -Iinclude src/*.c -o /dev/null \
+            -lsqlite3 -ldl 2>&1 | tee /tmp/warnings.txt || true
+          COUNT=$(grep -c "warning:" /tmp/warnings.txt || echo 0)
+          echo "Warning count: $COUNT"
+
+      - name: Upload artifacts on failure
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: failure-${{ matrix.os }}-${{ matrix.compiler }}-${{ matrix.std }}
+          path: |
+            /tmp/test_out.txt
+            /tmp/test_err.txt
+            /tmp/asan_out.txt
+            /tmp/asan_err.txt
+            /tmp/warnings.txt
+
+  summary:
+    name: CI Summary
+    needs: build-and-test
+    runs-on: ubuntu-latest
+    if: always()
+    steps:
+      - name: Check all jobs
+        run: |
+          if [ "${{ needs.build-and-test.result }}" = "success" ]; then
+            echo "All matrix jobs passed"
+          else
+            echo "Some jobs failed"
+            exit 1
+          fi
