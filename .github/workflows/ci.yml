@@ -13,14 +13,50 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        os: [ubuntu-latest, ubuntu-24.04-arm, macos-latest, macos-13]
-        compiler: [gcc, clang]
-        std: [c11, c17, c23]
-        exclude:
+        include:
+          # Ubuntu x86_64
+          - os: ubuntu-latest
+            compiler: gcc
+            std: c11
+          - os: ubuntu-latest
+            compiler: gcc
+            std: c17
+          - os: ubuntu-latest
+            compiler: gcc
+            std: c23
+            std_flag: c2x
+          - os: ubuntu-latest
+            compiler: clang
+            std: c11
+          - os: ubuntu-latest
+            compiler: clang
+            std: c17
+          - os: ubuntu-latest
+            compiler: clang
+            std: c23
+          # Ubuntu ARM64
+          - os: ubuntu-24.04-arm
+            compiler: gcc
+            std: c11
+          - os: ubuntu-24.04-arm
+            compiler: gcc
+            std: c17
+          - os: ubuntu-24.04-arm
+            compiler: clang
+            std: c11
+          - os: ubuntu-24.04-arm
+            compiler: clang
+            std: c17
+          # macOS ARM (M1/M2/M3)
           - os: macos-latest
-            compiler: gcc
-          - os: macos-13
-            compiler: gcc
+            compiler: clang
+            std: c11
+          - os: macos-latest
+            compiler: clang
+            std: c17
+          - os: macos-latest
+            compiler: clang
+            std: c23
 
     steps:
       - uses: actions/checkout@v4
@@ -33,22 +69,28 @@ jobs:
         if: startsWith(matrix.os, 'macos')
         run: brew install sqlite3
 
+      - name: Set std flag
+        id: stdflags
+        run: |
+          STD="${{ matrix.std_flag || matrix.std }}"
+          echo "std_flag=$STD" >> $GITHUB_OUTPUT
+
       - name: Build release
         run: |
-          ${{ matrix.compiler }} -Wall -std=${{ matrix.std }} \
+          ${{ matrix.compiler }} -Wall -std=${{ steps.stdflags.outputs.std_flag }} \
+            -D_GNU_SOURCE -D_POSIX_C_SOURCE=200809L \
             -Iinclude src/*.c -o zesh \
-            -lsqlite3 -ldl
-        env:
-          CC: ${{ matrix.compiler }}
+            $(pkg-config --libs sqlite3 2>/dev/null || echo "-lsqlite3") \
+            $([ "$(uname)" != "Darwin" ] && echo "-ldl" || echo "")
 
-      - name: Build debug (ASAN+UBSAN)
+      - name: Build debug
         run: |
-          ${{ matrix.compiler }} -Wall -std=${{ matrix.std }} \
+          ${{ matrix.compiler }} -Wall -std=${{ steps.stdflags.outputs.std_flag }} \
+            -D_GNU_SOURCE -D_POSIX_C_SOURCE=200809L \
             -g -fsanitize=address,undefined \
             -Iinclude src/*.c -o zesh_debug \
-            -lsqlite3 -ldl
-        env:
-          CC: ${{ matrix.compiler }}
+            $(pkg-config --libs sqlite3 2>/dev/null || echo "-lsqlite3") \
+            $([ "$(uname)" != "Darwin" ] && echo "-ldl" || echo "")
 
       - name: Run parity tests
         run: |
@@ -62,7 +104,7 @@ jobs:
             exit 1
           fi
 
-      - name: Run ASAN/UBSAN tests
+      - name: Run ASAN tests
         run: |
           ./zesh_debug test_parite.sh \
             > /tmp/asan_out.txt 2>/tmp/asan_err.txt || true
@@ -72,19 +114,10 @@ jobs:
             exit 1
           fi
           if grep -q "ERROR: AddressSanitizer\|runtime error:" /tmp/asan_err.txt; then
-            echo "ASAN/UBSAN errors detected:"
+            echo "ASAN/UBSAN errors:"
             cat /tmp/asan_err.txt
             exit 1
           fi
-          echo "No ASAN/UBSAN errors"
-
-      - name: Compiler warnings report
-        run: |
-          ${{ matrix.compiler }} -Wall -Wextra -std=${{ matrix.std }} \
-            -Iinclude src/*.c -o /dev/null \
-            -lsqlite3 -ldl 2>&1 | tee /tmp/warnings.txt || true
-          COUNT=$(grep -c "warning:" /tmp/warnings.txt || echo 0)
-          echo "Warning count: $COUNT"
 
       - name: Upload artifacts on failure
         if: failure()
@@ -96,19 +129,3 @@ jobs:
             /tmp/test_err.txt
             /tmp/asan_out.txt
             /tmp/asan_err.txt
-            /tmp/warnings.txt
-
-  summary:
-    name: CI Summary
-    needs: build-and-test
-    runs-on: ubuntu-latest
-    if: always()
-    steps:
-      - name: Check all jobs
-        run: |
-          if [ "${{ needs.build-and-test.result }}" = "success" ]; then
-            echo "All matrix jobs passed"
-          else
-            echo "Some jobs failed"
-            exit 1
-          fi

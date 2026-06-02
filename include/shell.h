@@ -4,6 +4,7 @@
 #ifndef SHELL_H
 #define SHELL_H
 
+#include <signal.h>
 #include <sys/types.h>
 #define MAX_ARGS    64
 #define MAX_TOKENS  256
@@ -18,7 +19,7 @@ typedef struct ForNode   ForNode;
 typedef struct CmdNode   CmdNode;
 typedef struct CmdList   CmdList;
 
-extern volatile __sig_atomic_t g_sigint_received;
+extern volatile sig_atomic_t g_sigint_received;
 extern time_t g_shell_start_time;
 typedef enum {
     TOK_EOF = 0,
