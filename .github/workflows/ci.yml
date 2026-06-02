@@ -78,7 +78,7 @@ jobs:
       - name: Build release
         run: |
           ${{ matrix.compiler }} -Wall -std=${{ steps.stdflags.outputs.std_flag }} \
-            -D_GNU_SOURCE -D_POSIX_C_SOURCE=200809L \
+            -D_POSIX_C_SOURCE=200809L \
             -Iinclude src/*.c -o zesh \
             $(pkg-config --libs sqlite3 2>/dev/null || echo "-lsqlite3") \
             $([ "$(uname)" != "Darwin" ] && echo "-ldl" || echo "")
@@ -94,13 +94,14 @@ jobs:
 
       - name: Run parity tests
         run: |
-          ./zesh test_parite.sh > /tmp/test_out.txt 2>/tmp/test_err.txt
+          ./zesh test_parite.sh > /tmp/test_out.txt 2>/tmp/test_err.txt || true
           cat /tmp/test_out.txt
+          cat /tmp/test_err.txt | head -20
+          grep "RESULT" /tmp/test_out.txt || echo "NO RESULT LINE"
           if grep -q "0 FAIL" /tmp/test_out.txt; then
             echo "All parity tests passed"
           else
             echo "PARITY TESTS FAILED"
-            cat /tmp/test_err.txt
             exit 1
           fi
 

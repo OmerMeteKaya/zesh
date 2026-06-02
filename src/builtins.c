@@ -886,8 +886,11 @@ int run_builtin(Command *cmd) {
                     {"INT",  SIGINT},  {"TERM", SIGTERM}, {"HUP",  SIGHUP},
                     {"QUIT", SIGQUIT}, {"USR1", SIGUSR1}, {"USR2", SIGUSR2},
                     {"PIPE", SIGPIPE}, {"ALRM", SIGALRM}, {"CHLD", SIGCHLD},
-                    {"TSTP", SIGTSTP}, {"CONT", SIGCONT}, {"WINCH",SIGWINCH},
-                    {"KILL", SIGKILL}, {"STOP", SIGSTOP}, {NULL, 0}
+{"TSTP", SIGTSTP}, {"CONT", SIGCONT},
+#ifdef SIGWINCH
+{"WINCH",SIGWINCH},
+#endif
+{"KILL", SIGKILL}, {"STOP", SIGSTOP}, {NULL, 0}
                 };
                 for (int mi = 0; map[mi].n; mi++) {
                     if (strcasecmp(name, map[mi].n) == 0) {
