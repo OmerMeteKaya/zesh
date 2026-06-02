@@ -2,19 +2,26 @@
 // Created by mete on 23.04.2026.
 //
 
+#define _GNU_SOURCE
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <strings.h>
 #include <unistd.h>
 #include <sys/wait.h>
 #include <signal.h>
 #include <termios.h>
 #include <sys/stat.h>
+#include <sys/select.h>
 #include <fnmatch.h>
 #include <regex.h>
-#include <stdlib.h>
-#include <sys/stat.h>
-#include <signal.h>
+#include <fcntl.h>
+#include <errno.h>
+#include <pwd.h>
+#include <time.h>
+#include <sys/resource.h>
+#include <dirent.h>
+#include <glob.h>
 #include "../include/jobs.h"
 #include "../include/alias.h"
 #include "../include/rc.h"
@@ -34,6 +41,11 @@ extern void trap_generic_handler(int sig);
 extern int g_opt_errexit;
 extern int g_opt_xtrace;
 extern int g_opt_pipefail;
+
+#define MAX_HASH_ENTRIES 128
+typedef struct { char name[64]; char path[256]; int hits; } HashEntry;
+static HashEntry g_hash_table[MAX_HASH_ENTRIES];
+static int g_hash_count = 0;
 
 static void restore_terminal(void) {
     struct termios t;
@@ -73,12 +85,18 @@ int is_builtin(const char *cmd) {
     if (strcmp(cmd, "true")  == 0) return 1;
     if (strcmp(cmd, "false") == 0) return 1;
     if (strcmp(cmd, ":")     == 0) return 1;
-    return (strcmp(cmd, "cd") == 0) || 
-           (strcmp(cmd, "exit") == 0) || 
+    return (strcmp(cmd, "cd") == 0) ||
+           (strcmp(cmd, "exit") == 0) ||
+           (strcmp(cmd, "exec") == 0) ||
+           (strcmp(cmd, "eval") == 0) ||
+           (strcmp(cmd, "declare") == 0) ||
+           (strcmp(cmd, "typeset") == 0) ||
+           (strcmp(cmd, "local")   == 0) ||
+           (strcmp(cmd, "readonly") == 0) ||
            (strcmp(cmd, "export") == 0) ||
            (strcmp(cmd, "set") == 0) ||
-           (strcmp(cmd, "unset") == 0) || 
-           (strcmp(cmd, "pwd") == 0) || 
+           (strcmp(cmd, "unset") == 0) ||
+           (strcmp(cmd, "pwd") == 0) ||
            (strcmp(cmd, "echo") == 0) ||
            (strcmp(cmd, "jobs") == 0) ||
            (strcmp(cmd, "fg") == 0) ||
@@ -94,8 +112,20 @@ int is_builtin(const char *cmd) {
            (strcmp(cmd, "printf") == 0) ||
            (strcmp(cmd, "read") == 0) ||
            (strcmp(cmd, "test") == 0) ||
-           (strcmp(cmd, "[")    == 0);
-
+           (strcmp(cmd, "[")    == 0) ||
+           (strcmp(cmd, "getopts")  == 0) ||
+           (strcmp(cmd, "mapfile")  == 0) ||
+           (strcmp(cmd, "readarray") == 0) ||
+           (strcmp(cmd, "type")     == 0) ||
+           (strcmp(cmd, "hash")     == 0) ||
+           (strcmp(cmd, "wait")     == 0) ||
+           (strcmp(cmd, "disown")   == 0) ||
+           (strcmp(cmd, "umask")    == 0) ||
+           (strcmp(cmd, "ulimit")   == 0) ||
+           (strcmp(cmd, "caller")   == 0) ||
+           (strcmp(cmd, "compgen")  == 0) ||
+           (strcmp(cmd, "complete") == 0) ||
+           (strcmp(cmd, "select")   == 0);
 }
 /* ===== POSIX test / [ implementation ===== */
 
@@ -315,15 +345,54 @@ int run_builtin(Command *cmd) {
     if (strcmp(builtin_cmd, "true") == 0 ||
         strcmp(builtin_cmd, ":")    == 0) {
         return 0;
-        }
+    }
     if (strcmp(builtin_cmd, "false") == 0) {
         return 1;
+    }
+
+    if (strcmp(builtin_cmd, "exec") == 0) {
+        /* process replacement */
+        if (cmd->argc >= 2) {
+            execvp(cmd->argv[1], cmd->argv + 1);
+            perror(cmd->argv[1]);
+            exit(127);
+        }
+        /* exec with only redirections: handled by executor's save/restore — nothing to do */
+        return 0;
     }
 
     if (strcmp(cmd->argv[0], "return") == 0) {
         g_return_value = cmd->argc > 1 ? atoi(cmd->argv[1]) : 0;
         g_returning    = 1;
         return g_return_value;
+    }
+    if (strcmp(builtin_cmd, "eval") == 0) {
+        if (cmd->argc < 2) return 0;
+        char evalstr[4096] = {0};
+        for (int i = 1; i < cmd->argc; i++) {
+            if (i > 1) strncat(evalstr, " ", sizeof(evalstr)-strlen(evalstr)-1);
+            strncat(evalstr, cmd->argv[i], sizeof(evalstr)-strlen(evalstr)-1);
+        }
+        extern Token *lex(const char *input, int *ntokens);
+        extern Token *glob_expand_tokens(Token *toks, int *ntokens, int last_exit);
+        extern Token *word_split_tokens(Token *toks, int ntokens, int *new_count);
+        extern CmdList *parse_list(Token *toks, int ntokens);
+        extern void tokens_free(Token *toks, int n);
+        extern int last_exit_status;
+        int ntok = 0;
+        Token *toks = lex(evalstr, &ntok);
+        if (!toks) return 1;
+        toks = glob_expand_tokens(toks, &ntok, last_exit_status);
+        if (!toks) return 1;
+        toks = word_split_tokens(toks, ntok, &ntok);
+        if (!toks) return 1;
+        CmdList *cl = parse_list(toks, ntok);
+        tokens_free(toks, ntok);
+        if (!cl) return 1;
+        int r = execute_list(cl);
+        extern void cmdlist_free(CmdList *list);
+        cmdlist_free(cl);
+        return r;
     }
     if (strcmp(builtin_cmd, "set") == 0) {
         if (cmd->argc == 1) {
@@ -335,6 +404,12 @@ int run_builtin(Command *cmd) {
         }
         for (int i = 1; i < cmd->argc; i++) {
             const char *arg = cmd->argv[i];
+            /* set -- args: set positional parameters (check this first!) */
+            if (strcmp(arg, "--") == 0) {
+                positional_set(cmd->argv + i + 1,
+                               cmd->argc - i - 1);
+                break;
+            }
             /* set -o option */
             if (strcmp(arg, "-o") == 0 && i + 1 < cmd->argc) {
                 i++;
@@ -371,12 +446,6 @@ int run_builtin(Command *cmd) {
                     }
                 }
                 continue;
-            }
-            /* set -- args: set positional parameters */
-            if (strcmp(arg, "--") == 0) {
-                positional_set(cmd->argv + i + 1,
-                               cmd->argc - i - 1);
-                break;
             }
         }
         return 0;
@@ -512,10 +581,7 @@ int run_builtin(Command *cmd) {
         if (cmd->argc <= 1) {
             return 1;
         }
-        
-        if (unsetenv(cmd->argv[1]) != 0) {
-            return 1;
-        }
+        var_unset(cmd->argv[1]);
         return 0;
     }
     
@@ -1010,7 +1076,7 @@ int run_builtin(Command *cmd) {
         int timeout = -1;
         const char *array_name = NULL;
         int argi = 1;
-
+        int read_fd = -1;  /* -u fd */
         while (argi < cmd->argc && cmd->argv[argi][0] == '-') {
             const char *flag = cmd->argv[argi];
             if (strcmp(flag, "--") == 0) { argi++; break; }
@@ -1021,6 +1087,10 @@ int run_builtin(Command *cmd) {
                     case 'p':
                         if (flag[fi+1]) { prompt = flag+fi+1; fi = (int)strlen(flag)-1; }
                         else if (argi+1 < cmd->argc) prompt = cmd->argv[++argi];
+                        break;
+                    case 'u':
+                        if (flag[fi+1]) { read_fd = atoi(flag+fi+1); fi = (int)strlen(flag)-1; }
+                        else if (argi+1 < cmd->argc) read_fd = atoi(cmd->argv[++argi]);
                         break;
                     case 't':
                         if (flag[fi+1]) { timeout = atoi(flag+fi+1); fi = (int)strlen(flag)-1; }
@@ -1057,7 +1127,11 @@ int run_builtin(Command *cmd) {
             tcflush(STDIN_FILENO, TCIFLUSH);
             term_changed = 1;
         }
-
+        int saved_read_fd = -1;
+        if (read_fd >= 0) {
+            saved_read_fd = dup(STDIN_FILENO);
+            dup2(read_fd, STDIN_FILENO);
+        }
         /* print prompt directly to stderr after mode switch */
         if (prompt) {
             write(STDERR_FILENO, prompt, strlen(prompt));
@@ -1119,6 +1193,10 @@ int run_builtin(Command *cmd) {
             char *tok = strtok(tmp, " \t");
             while (tok && nw < 1024) { words[nw++] = tok; tok = strtok(NULL, " \t"); }
             arr_set_from_list(array_name, words, nw);
+            if (saved_read_fd >= 0) {
+                dup2(saved_read_fd, STDIN_FILENO);
+                close(saved_read_fd);
+            }
             free(tmp);
             return 0;
         }
@@ -1131,6 +1209,10 @@ int run_builtin(Command *cmd) {
             /* no variable names given: default to REPLY */
             local_var_set("REPLY", linebuf);
             setenv("REPLY", linebuf, 1);
+            if (saved_read_fd >= 0) {
+                dup2(saved_read_fd, STDIN_FILENO);
+                close(saved_read_fd);
+            }
             return 0;
         }
 
@@ -1155,6 +1237,10 @@ int run_builtin(Command *cmd) {
             setenv(varnames[vi], start, 1);
         }
         free(tmp);
+        if (saved_read_fd >= 0) {
+            dup2(saved_read_fd, STDIN_FILENO);
+            close(saved_read_fd);
+        }
         return 0;
     }
 
@@ -1187,6 +1273,271 @@ int run_builtin(Command *cmd) {
         return builtin_test(args, nargs);
     }
 
+    if (strcmp(builtin_cmd, "local") == 0 ||
+        strcmp(builtin_cmd, "readonly") == 0) {
+        int attrs = VAR_ATTR_LOCAL;
+        if (strcmp(builtin_cmd, "readonly") == 0) attrs |= VAR_ATTR_READONLY;
+
+        for (int i = 1; i < cmd->argc; i++) {
+            /* parse optional -r etc. */
+            if (cmd->argv[i][0] == '-') {
+                for (int fi = 1; cmd->argv[i][fi]; fi++) {
+                    if (cmd->argv[i][fi] == 'r') attrs |= VAR_ATTR_READONLY;
+                    if (cmd->argv[i][fi] == 'i') attrs |= VAR_ATTR_INTEGER;
+                }
+                continue;
+            }
+            char *eq = strchr(cmd->argv[i], '=');
+            if (eq) {
+                *eq = '\0';
+                local_var_set(cmd->argv[i], eq + 1);
+                var_declare(cmd->argv[i], eq + 1, attrs);
+                *eq = '=';
+            } else {
+                local_var_set(cmd->argv[i], "");
+                var_declare(cmd->argv[i], "", attrs);
+            }
+        }
+        return 0;
+    }
+
+    if (strcmp(builtin_cmd, "declare") == 0 ||
+        strcmp(builtin_cmd, "typeset") == 0) {
+        int attrs = 0;
+        int argi  = 1;
+        int print = 0;
+
+        while (argi < cmd->argc && cmd->argv[argi][0] == '-') {
+            const char *flag = cmd->argv[argi];
+            if (strcmp(flag, "--") == 0) { argi++; break; }
+            for (int fi = 1; flag[fi]; fi++) {
+                switch (flag[fi]) {
+                    case 'r': attrs |= VAR_ATTR_READONLY; break;
+                    case 'i': attrs |= VAR_ATTR_INTEGER;  break;
+                    case 'x': attrs |= VAR_ATTR_EXPORT;   break;
+                    case 'n': attrs |= VAR_ATTR_NAMEREF;  break;
+                    case 'u': attrs |= VAR_ATTR_UPPERCASE; break;
+                    case 'l': attrs |= VAR_ATTR_LOWERCASE; break;
+                    case 'p': print = 1; break;
+                    default: break;
+                }
+            }
+            argi++;
+        }
+
+        if (print || argi >= cmd->argc) {
+            var_list(attrs);
+            return 0;
+        }
+
+        for (int i = argi; i < cmd->argc; i++) {
+            char *eq = strchr(cmd->argv[i], '=');
+            if (eq) {
+                *eq = '\0';
+                var_declare(cmd->argv[i], eq + 1, attrs);
+                *eq = '=';
+            } else {
+                /* declare var without value — set attrs only */
+                const char *cur = var_get(cmd->argv[i]);
+                var_declare(cmd->argv[i], cur, attrs);
+            }
+        }
+        return 0;
+    }
+
+    if (strcmp(builtin_cmd, "getopts") == 0) {
+        if (cmd->argc < 3) {
+            fprintf(stderr, "getopts: usage: getopts optstring name [args...]\n");
+            return 1;
+        }
+        const char *optstring = cmd->argv[1];
+        const char *varname   = cmd->argv[2];
+        int silent = (optstring[0] == ':');
+        const char *opts = silent ? optstring + 1 : optstring;
+
+        /* OPTIND is 1-based index into args */
+        const char *oi_str = var_get("OPTIND");
+        int optind = oi_str ? atoi(oi_str) : 1;
+        if (optind < 1) optind = 1;
+
+        /* within-arg char position (private var _GETOPTS_CP) */
+        const char *cp_str = var_get("_GETOPTS_CP");
+        int charpos = cp_str ? atoi(cp_str) : 1;
+        if (charpos < 1) charpos = 1;
+
+        /* build args array */
+        const char *xargs[MAX_ARGS];
+        int nxargs;
+        if (cmd->argc > 3) {
+            nxargs = cmd->argc - 3;
+            for (int i = 0; i < nxargs && i < MAX_ARGS; i++)
+                xargs[i] = cmd->argv[3 + i];
+        } else {
+            nxargs = positional_get_count();
+            for (int i = 0; i < nxargs && i < MAX_ARGS; i++)
+                xargs[i] = positional_get(i);
+        }
+
+        /* advance past exhausted args */
+        while (optind <= nxargs) {
+            const char *a = xargs[optind - 1];
+            if (!a || a[0] != '-' || (a[1] == '\0') ||
+                (a[1] == '-' && a[2] == '\0')) {
+                /* not an option arg */
+                char ib[16]; snprintf(ib, sizeof(ib), "%d", optind);
+                local_var_set("OPTIND", ib); setenv("OPTIND", ib, 1);
+                local_var_set(varname, "?"); setenv(varname, "?", 1);
+                return 1;
+            }
+            if (a[charpos]) break;
+            /* exhausted this arg */
+            optind++; charpos = 1;
+        }
+
+        if (optind > nxargs) {
+            char ib[16]; snprintf(ib, sizeof(ib), "%d", optind);
+            local_var_set("OPTIND", ib); setenv("OPTIND", ib, 1);
+            local_var_set(varname, "?"); setenv(varname, "?", 1);
+            return 1;
+        }
+
+        const char *curarg = xargs[optind - 1];
+        char opt = curarg[charpos];
+        const char *found = strchr(opts, opt);
+
+        if (!found) {
+            char ob[2] = {opt, 0};
+            if (!silent) fprintf(stderr, "zesh: illegal option -- %c\n", opt);
+            local_var_set(varname, "?"); setenv(varname, "?", 1);
+            local_var_set("OPTARG", ob); setenv("OPTARG", ob, 1);
+        } else {
+            char ob[2] = {opt, 0};
+            local_var_set(varname, ob); setenv(varname, ob, 1);
+
+            if (found[1] == ':') {
+                /* option requires argument */
+                if (curarg[charpos + 1]) {
+                    /* rest of current arg */
+                    local_var_set("OPTARG", curarg + charpos + 1);
+                    setenv("OPTARG", curarg + charpos + 1, 1);
+                    optind++; charpos = 1;
+                } else if (optind < nxargs) {
+                    optind++;
+                    local_var_set("OPTARG", xargs[optind - 1]);
+                    setenv("OPTARG", xargs[optind - 1], 1);
+                    optind++; charpos = 1;
+                } else {
+                    local_var_set("OPTARG", ""); setenv("OPTARG", "", 1);
+                    if (silent) {
+                        char eb[2] = {opt, 0};
+                        local_var_set(varname, ":"); setenv(varname, ":", 1);
+                        local_var_set("OPTARG", eb); setenv("OPTARG", eb, 1);
+                    } else {
+                        fprintf(stderr, "zesh: option requires argument -- %c\n", opt);
+                        local_var_set(varname, "?"); setenv(varname, "?", 1);
+                    }
+                    optind++; charpos = 1;
+                }
+            } else {
+                local_var_set("OPTARG", ""); setenv("OPTARG", "", 1);
+                charpos++;
+                if (!curarg[charpos]) { optind++; charpos = 1; }
+            }
+        }
+
+        if (found && found[1] != ':') {
+            /* charpos already advanced above for non-arg opts */
+        }
+
+        char ib2[16]; snprintf(ib2, sizeof(ib2), "%d", optind);
+        local_var_set("OPTIND", ib2); setenv("OPTIND", ib2, 1);
+        char cb[16]; snprintf(cb, sizeof(cb), "%d", charpos);
+        local_var_set("_GETOPTS_CP", cb); setenv("_GETOPTS_CP", cb, 1);
+        return found ? 0 : 1;
+    }
+
+    if (strcmp(builtin_cmd, "mapfile") == 0 ||
+        strcmp(builtin_cmd, "readarray") == 0) {
+        const char *array_name = "MAPFILE";
+        int count_only = 0;
+        int skip = 0;
+        int nlines = -1;
+        char delim_char = '\n';
+        int trim_delim = 0;
+
+        int argi = 1;
+        while (argi < cmd->argc && cmd->argv[argi][0] == '-') {
+            const char *flag = cmd->argv[argi];
+            if (strcmp(flag, "--") == 0) { argi++; break; }
+            for (int fi = 1; flag[fi]; fi++) {
+                switch (flag[fi]) {
+                    case 'n':
+                        if (flag[fi+1]) { nlines = atoi(flag+fi+1); fi = (int)strlen(flag)-1; }
+                        else if (argi+1 < cmd->argc) nlines = atoi(cmd->argv[++argi]);
+                        break;
+                    case 's':
+                        if (flag[fi+1]) { skip = atoi(flag+fi+1); fi = (int)strlen(flag)-1; }
+                        else if (argi+1 < cmd->argc) skip = atoi(cmd->argv[++argi]);
+                        break;
+                    case 'd':
+                        if (flag[fi+1]) { delim_char = flag[fi+1]; fi = (int)strlen(flag)-1; }
+                        else if (argi+1 < cmd->argc) delim_char = cmd->argv[++argi][0];
+                        break;
+                    case 't': /* trim delimiter */ trim_delim = 1; break;
+                    default: break;
+                }
+            }
+            argi++;
+        }
+
+        if (argi < cmd->argc)
+            array_name = cmd->argv[argi];
+
+        /* read lines from stdin */
+        char line[4096];
+        char **lines = NULL;
+        int   nread  = 0;
+        int   cap    = 16;
+        lines = malloc(cap * sizeof(char*));
+        if (!lines) return 1;
+
+        int skipped = 0;
+        while (1) {
+            if (nlines >= 0 && nread >= nlines) break;
+            int li = 0;
+            int c;
+            while ((c = fgetc(stdin)) != EOF) {
+                if (li < (int)sizeof(line) - 1)
+                    line[li++] = (char)c;
+                if ((char)c == delim_char) break;
+            }
+            if (li == 0) break;
+            /* trim delimiter if -t flag is set */
+            if (trim_delim && li > 0 && line[li-1] == delim_char) {
+                line[li-1] = '\0';
+                li--;
+            }
+            line[li] = '\0';
+            if (skipped < skip) { skipped++; continue; }
+            if (nread >= cap) {
+                cap *= 2;
+                char **tmp = realloc(lines, cap * sizeof(char*));
+                if (!tmp) break;
+                lines = tmp;
+            }
+            lines[nread++] = strdup(line);
+        }
+
+        /* store in array */
+        for (int i = 0; i < nread; i++) {
+            arr_set(array_name, i, lines[i]);
+            free(lines[i]);
+        }
+        free(lines);
+        (void)count_only;
+        return 0;
+    }
+
     if (strcmp(builtin_cmd, "[[") == 0) {
         int nargs = cmd->argc - 1;
         char **args = cmd->argv + 1;
@@ -1213,6 +1564,401 @@ int run_builtin(Command *cmd) {
         g_loop_control = LOOP_CONTINUE;
         return 0;
     }
-    
+
+    /* ---- type builtin ---- */
+    if (strcmp(builtin_cmd, "type") == 0) {
+        int all = 0, quiet = 0;
+        int argi = 1;
+        while (argi < cmd->argc && cmd->argv[argi][0] == '-') {
+            for (int fi = 1; cmd->argv[argi][fi]; fi++) {
+                if (cmd->argv[argi][fi] == 'a') all = 1;
+                if (cmd->argv[argi][fi] == 't') quiet = 1;  /* type only */
+                if (cmd->argv[argi][fi] == 'f') { /* force function check */ }
+            }
+            argi++;
+        }
+        (void)all;
+        int ret = 0;
+        for (int i = argi; i < cmd->argc; i++) {
+            const char *name = cmd->argv[i];
+            /* check keywords */
+            const char *keywords[] = {"if","then","else","elif","fi","while",
+                "until","do","done","for","in","case","esac","function",
+                "select","time","coproc","{","}","!","[[","]]","((",")",NULL};
+            int found_kw = 0;
+            for (int ki = 0; keywords[ki]; ki++) {
+                if (strcmp(name, keywords[ki]) == 0) {
+                    if (quiet) printf("keyword\n");
+                    else printf("%s is a shell keyword\n", name);
+                    found_kw = 1;
+                    break;
+                }
+            }
+            if (found_kw) continue;
+            /* check function */
+            if (func_get_body(name)) {
+                if (quiet) printf("function\n");
+                else        printf("%s is a function\n", name);
+                continue;
+            }
+            /* check builtin */
+            if (is_builtin(name)) {
+                if (quiet) printf("builtin\n");
+                else        printf("%s is a shell builtin\n", name);
+                continue;
+            }
+            /* check PATH */
+            const char *path_env = getenv("PATH");
+            int found_ext = 0;
+            if (path_env) {
+                char pbuf[4096];
+                strncpy(pbuf, path_env, sizeof(pbuf)-1);
+                char *dir = strtok(pbuf, ":");
+                while (dir) {
+                    char full[4096];
+                    snprintf(full, sizeof(full), "%s/%s", dir, name);
+                    if (access(full, X_OK) == 0) {
+                        if (quiet) printf("file\n");
+                        else        printf("%s is %s\n", name, full);
+                        found_ext = 1;
+                        break;
+                    }
+                    dir = strtok(NULL, ":");
+                }
+            }
+            if (!found_ext) {
+                fprintf(stderr, "type: %s: not found\n", name);
+                ret = 1;
+            }
+        }
+        return ret;
+    }
+
+    /* ---- hash builtin ---- */
+    if (strcmp(builtin_cmd, "hash") == 0) {
+        int do_reset = 0, do_delete = 0;
+        const char *del_name = NULL;
+        int argi = 1;
+        while (argi < cmd->argc && cmd->argv[argi][0] == '-') {
+            if (strcmp(cmd->argv[argi], "-r") == 0) {
+                do_reset = 1;
+                argi++;
+            } else if (strcmp(cmd->argv[argi], "-d") == 0) {
+                if (argi + 1 < cmd->argc) {
+                    do_delete = 1;
+                    del_name = cmd->argv[argi + 1];
+                    argi += 2;
+                } else {
+                    argi++;
+                }
+            } else {
+                argi++;
+            }
+        }
+        if (do_reset) {
+            g_hash_count = 0;
+            memset(g_hash_table, 0, sizeof(g_hash_table));
+            return 0;
+        }
+        if (do_delete && del_name) {
+            for (int i = 0; i < g_hash_count; i++) {
+                if (strcmp(g_hash_table[i].name, del_name) == 0) {
+                    g_hash_table[i] = g_hash_table[--g_hash_count];
+                    break;
+                }
+            }
+            return 0;
+        }
+        if (argi >= cmd->argc) {
+            /* list cache */
+            if (g_hash_count == 0) return 0;
+            printf("hits\tcommand\n");
+            for (int i = 0; i < g_hash_count; i++)
+                printf("%d\t%s\n", g_hash_table[i].hits, g_hash_table[i].path);
+            return 0;
+        }
+        /* hash NAME — look up and cache */
+        for (int ni = argi; ni < cmd->argc; ni++) {
+            const char *nm = cmd->argv[ni];
+            /* check existing */
+            int found = 0;
+            for (int i = 0; i < g_hash_count; i++) {
+                if (strcmp(g_hash_table[i].name, nm) == 0) {
+                    g_hash_table[i].hits++;
+                    found = 1; break;
+                }
+            }
+            if (found) continue;
+            /* search PATH */
+            const char *penv = getenv("PATH");
+            if (!penv) { fprintf(stderr, "hash: %s: not found\n", nm); continue; }
+            char pbuf[4096]; strncpy(pbuf, penv, sizeof(pbuf)-1);
+            char *dir = strtok(pbuf, ":");
+            int resolved = 0;
+            while (dir) {
+                char full[4096];
+                snprintf(full, sizeof(full), "%s/%s", dir, nm);
+                if (access(full, X_OK) == 0) {
+                    if (g_hash_count < MAX_HASH_ENTRIES) {
+                        strncpy(g_hash_table[g_hash_count].name, nm, 63);
+                        strncpy(g_hash_table[g_hash_count].path, full, 255);
+                        g_hash_table[g_hash_count].hits = 1;
+                        g_hash_count++;
+                    }
+                    resolved = 1; break;
+                }
+                dir = strtok(NULL, ":");
+            }
+            if (!resolved) fprintf(stderr, "hash: %s: not found\n", nm);
+        }
+        return 0;
+    }
+
+    /* ---- wait builtin ---- */
+    if (strcmp(builtin_cmd, "wait") == 0) {
+        if (cmd->argc == 1) {
+            /* wait for all background jobs */
+            int status;
+            while (waitpid(-1, &status, 0) > 0);
+            return 0;
+        }
+        int ret2 = 0;
+        for (int i = 1; i < cmd->argc; i++) {
+            pid_t pid2 = (pid_t)atoi(cmd->argv[i]);
+            if (pid2 <= 0) { ret2 = 1; continue; }
+            int status2;
+            pid_t r = waitpid(pid2, &status2, 0);
+            if (r < 0) {
+                if (errno == ECHILD) {
+                    /* already reaped by SIGCHLD handler — return last status */
+                    ret2 = 0;
+                } else {
+                    fprintf(stderr, "wait: %d: no such process\n", (int)pid2);
+                    ret2 = 127;
+                }
+            } else {
+                ret2 = WIFEXITED(status2) ? WEXITSTATUS(status2) : 1;
+            }
+        }
+        return ret2;
+    }
+
+    /* ---- disown builtin ---- */
+    if (strcmp(builtin_cmd, "disown") == 0) {
+        if (cmd->argc == 1) {
+            extern void jobs_disown_all(void);
+            jobs_disown_all();
+            return 0;
+        }
+        for (int i = 1; i < cmd->argc; i++) {
+            if (cmd->argv[i][0] == '%') {
+                int jid = atoi(cmd->argv[i] + 1);
+                Job *j  = job_get_by_id(jid);
+                if (j) job_remove(j->pgid);
+            } else {
+                pid_t dpid = (pid_t)atoi(cmd->argv[i]);
+                job_remove(dpid);
+            }
+        }
+        return 0;
+    }
+
+    /* ---- umask builtin ---- */
+    if (strcmp(builtin_cmd, "umask") == 0) {
+        if (cmd->argc == 1) {
+            mode_t m = umask(0); umask(m);
+            printf("%04o\n", (unsigned)m);
+            return 0;
+        }
+        mode_t new_mask = (mode_t)strtol(cmd->argv[1], NULL, 8);
+        umask(new_mask);
+        return 0;
+    }
+
+    /* ---- ulimit builtin ---- */
+    if (strcmp(builtin_cmd, "ulimit") == 0) {
+        struct rlimit rl;
+        int resource = RLIMIT_NOFILE;
+        int hard = 0, soft = 0;
+        int argi2 = 1;
+
+        while (argi2 < cmd->argc && cmd->argv[argi2][0] == '-') {
+            for (int fi = 1; cmd->argv[argi2][fi]; fi++) {
+                switch(cmd->argv[argi2][fi]) {
+                    case 'n': resource = RLIMIT_NOFILE;  break;
+                    case 'c': resource = RLIMIT_CORE;    break;
+                    case 'f': resource = RLIMIT_FSIZE;   break;
+                    case 's': resource = RLIMIT_STACK;   break;
+                    case 'v': resource = RLIMIT_AS;      break;
+                    case 'H': hard = 1;  break;
+                    case 'S': soft = 1;  break;
+                    case 'a': {
+                        /* print all */
+                        int resources[] = {RLIMIT_NOFILE, RLIMIT_CORE, RLIMIT_FSIZE,
+                                           RLIMIT_STACK, RLIMIT_AS};
+                        const char *names[] = {"open files", "core file size",
+                                               "file size", "stack size", "virtual memory"};
+                        for (int ri = 0; ri < 5; ri++) {
+                            getrlimit(resources[ri], &rl);
+                            if (rl.rlim_cur == RLIM_INFINITY)
+                                printf("%-24s unlimited\n", names[ri]);
+                            else
+                                printf("%-24s %lu\n", names[ri], (unsigned long)rl.rlim_cur);
+                        }
+                        return 0;
+                    }
+                    default: break;
+                }
+            }
+            argi2++;
+        }
+
+        if (argi2 < cmd->argc) {
+            /* set limit */
+            getrlimit(resource, &rl);
+            rlim_t val;
+            if (strcmp(cmd->argv[argi2], "unlimited") == 0)
+                val = RLIM_INFINITY;
+            else
+                val = (rlim_t)strtoull(cmd->argv[argi2], NULL, 10);
+            if (hard) rl.rlim_max = val;
+            if (soft || !hard) rl.rlim_cur = val;
+            setrlimit(resource, &rl);
+        } else {
+            /* get limit */
+            getrlimit(resource, &rl);
+            rlim_t val2 = (hard && !soft) ? rl.rlim_max : rl.rlim_cur;
+            if (val2 == RLIM_INFINITY) printf("unlimited\n");
+            else printf("%lu\n", (unsigned long)val2);
+        }
+        return 0;
+    }
+
+    /* ---- caller builtin ---- */
+    if (strcmp(builtin_cmd, "caller") == 0) {
+        /* caller [expr] — print call stack info */
+        /* basic: print line number (0) and function name */
+        int level = cmd->argc > 1 ? atoi(cmd->argv[1]) : 0;
+        (void)level;
+        printf("0 %s\n", g_current_funcname[0] ? g_current_funcname : "main");
+        return 0;
+    }
+
+    /* ---- compgen/complete ---- */
+    if (strcmp(builtin_cmd, "compgen") == 0) {
+        int argi3 = 1;
+        const char *word_filter = NULL;
+        while (argi3 < cmd->argc && cmd->argv[argi3][0] == '-') {
+            const char *flag3 = cmd->argv[argi3];
+            argi3++;
+            if (strcmp(flag3, "-W") == 0 && argi3 < cmd->argc) {
+                /* -W wordlist: print matching words */
+                const char *wordlist = cmd->argv[argi3++];
+                if (argi3 < cmd->argc) word_filter = cmd->argv[argi3++];
+                /* split wordlist on spaces and print matches */
+                char wl[4096]; strncpy(wl, wordlist, sizeof(wl)-1);
+                char *tok3 = strtok(wl, " \t");
+                while (tok3) {
+                    if (!word_filter || strncmp(tok3, word_filter,
+                                                strlen(word_filter)) == 0)
+                        printf("%s\n", tok3);
+                    tok3 = strtok(NULL, " \t");
+                }
+                return 0;
+            }
+            if (strcmp(flag3, "-b") == 0) {
+                /* generate builtin names */
+                if (argi3 < cmd->argc) word_filter = cmd->argv[argi3];
+                const char *builtins[] = {
+                    "cd","echo","exit","export","unset","pwd","jobs","fg","bg",
+                    "alias","unalias","source","trap","printf","read","test",
+                    "local","declare","typeset","readonly","set","getopts",
+                    "mapfile","readarray","type","hash","wait","disown","umask",
+                    "ulimit","caller","compgen","complete","return","break",
+                    "continue","true","false",":",NULL
+                };
+                for (int bi = 0; builtins[bi]; bi++) {
+                    if (!word_filter || strncmp(builtins[bi], word_filter,
+                                                strlen(word_filter)) == 0)
+                        printf("%s\n", builtins[bi]);
+                }
+                return 0;
+            }
+            if (strcmp(flag3, "-k") == 0) {
+                /* generate keywords */
+                if (argi3 < cmd->argc) word_filter = cmd->argv[argi3];
+                const char *keywords[] = {
+                    "if","then","else","elif","fi","while","until","do","done",
+                    "for","in","case","esac","function","select","time","coproc",
+                    "[[","]]","((",")){","}","!",NULL
+                };
+                for (int ki = 0; keywords[ki]; ki++) {
+                    if (!word_filter || strncmp(keywords[ki], word_filter,
+                                                strlen(word_filter)) == 0)
+                        printf("%s\n", keywords[ki]);
+                }
+                return 0;
+            }
+            if (strcmp(flag3, "-c") == 0) {
+                /* generate commands */
+                if (argi3 < cmd->argc) word_filter = cmd->argv[argi3];
+                const char *penv = getenv("PATH");
+                if (penv) {
+                    char pbuf3[4096]; strncpy(pbuf3, penv, sizeof(pbuf3)-1);
+                    char *dir3 = strtok(pbuf3, ":");
+                    while (dir3) {
+                        DIR *dp = opendir(dir3);
+                        if (dp) {
+                            struct dirent *ent;
+                            while ((ent = readdir(dp))) {
+                                if (ent->d_name[0] == '.') continue;
+                                if (!word_filter || strncmp(ent->d_name, word_filter, strlen(word_filter)) == 0) {
+                                    char full3[4096];
+                                    snprintf(full3, sizeof(full3), "%s/%s", dir3, ent->d_name);
+                                    if (access(full3, X_OK) == 0)
+                                        printf("%s\n", ent->d_name);
+                                }
+                            }
+                            closedir(dp);
+                        }
+                        dir3 = strtok(NULL, ":");
+                    }
+                }
+                return 0;
+            }
+            if (strcmp(flag3, "-f") == 0) {
+                /* generate filenames */
+                if (argi3 < cmd->argc) word_filter = cmd->argv[argi3];
+                glob_t g3;
+                char pat3[256];
+                snprintf(pat3, sizeof(pat3), "%s*", word_filter ? word_filter : "");
+                if (glob(pat3, GLOB_NOCHECK, NULL, &g3) == 0) {
+                    for (size_t gi = 0; gi < g3.gl_pathc; gi++)
+                        printf("%s\n", g3.gl_pathv[gi]);
+                    globfree(&g3);
+                }
+                return 0;
+            }
+            if (strcmp(flag3, "-v") == 0) {
+                /* generate variable names */
+                extern char **environ;
+                if (argi3 < cmd->argc) word_filter = cmd->argv[argi3];
+                for (char **ep = environ; *ep; ep++) {
+                    char *eq3 = strchr(*ep, '=');
+                    size_t nlen = eq3 ? (size_t)(eq3 - *ep) : strlen(*ep);
+                    if (!word_filter || strncmp(*ep, word_filter, strlen(word_filter)) == 0)
+                        printf("%.*s\n", (int)nlen, *ep);
+                }
+                return 0;
+            }
+        }
+        return 0;
+    }
+
+    if (strcmp(builtin_cmd, "complete") == 0) {
+        /* stub: just acknowledge */
+        return 0;
+    }
+
     return 1; // Not a builtin command
 }

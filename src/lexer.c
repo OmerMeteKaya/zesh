@@ -166,7 +166,39 @@ Token *lex(const char *input, int *ntokens) {
                 }
                 continue;
             case '<':
-                if (*(p+1) == '<') {
+                if (*(p+1) == '&') {
+                    /* <&N or <&- or <&$var : use TOK_REDIR_DUP_IN with word following */
+                    p += 2;
+                    if (!add_token(&tokens, &count, &capacity, TOK_REDIR_DUP_IN, strdup("0")))
+                        return NULL;
+                    continue;
+                } else if (*(p+1) == '<') {
+                    /* here-string: <<< word */
+                    if (*(p+2) == '<') {
+                        p += 3;
+                        while (*p == ' ' || *p == '\t') p++;
+                        const char *hs_start = p;
+                        /* read until whitespace or end, respecting quotes */
+                        char hsbuf[MAX_INPUT] = {0};
+                        int  hsi = 0;
+                        if (*p == '\'' || *p == '"') {
+                            char q = *p++;
+                            while (*p && *p != q)
+                                hsbuf[hsi++] = *p++;
+                            if (*p == q) p++;
+                        } else {
+                            while (*p && !isspace(*p) &&
+                                   *p != '|' && *p != '&' && *p != ';')
+                                hsbuf[hsi++] = *p++;
+                        }
+                        hsbuf[hsi] = '\0';
+                        (void)hs_start;
+                        char *val = strdup(hsbuf);
+                        if (!val) return NULL;
+                        if (!add_token(&tokens, &count, &capacity,
+                                       TOK_HERESTRING, val)) return NULL;
+                        continue;
+                    }
                     /* here-doc: << DELIM or <<'DELIM' */
                     p += 2;
                     /* skip whitespace */
@@ -217,6 +249,13 @@ Token *lex(const char *input, int *ntokens) {
                 if (*(p+1) == '>') {
                     if (!add_token(&tokens, &count, &capacity, TOK_REDIR_APP, NULL)) return NULL;
                     p += 2;
+                } else if (*(p+1) == '&') {
+                    /* >&N or >&- or >&$var : use TOK_REDIR_DUP_OUT with word following */
+                    p += 2;
+                    /* emit TOK_REDIR_DUP_OUT with src "1"; the target word follows */
+                    if (!add_token(&tokens, &count, &capacity, TOK_REDIR_DUP_OUT, strdup("1")))
+                        return NULL;
+                    continue;
                 } else if (*(p+1) == '(') {
                     /* process substitution >(...) */
                     const char *ps_start = p;
@@ -238,6 +277,66 @@ Token *lex(const char *input, int *ntokens) {
                     p++;
                     continue;
                 }
+        }
+
+        /* $'...' ANSI-C quoting */
+        if (*p == '$' && *(p+1) == '\'') {
+            p += 2;  /* skip $' */
+            char *buf2 = malloc(strlen(input) + 1);
+            if (!buf2) { tokens_free(tokens, count); return NULL; }
+            size_t bi = 0;
+            while (*p && *p != '\'') {
+                if (*p == '\\' && *(p+1)) {
+                    p++;
+                    switch (*p) {
+                        case 'n':  buf2[bi++] = '\n'; break;
+                        case 't':  buf2[bi++] = '\t'; break;
+                        case 'r':  buf2[bi++] = '\r'; break;
+                        case 'a':  buf2[bi++] = '\a'; break;
+                        case 'b':  buf2[bi++] = '\b'; break;
+                        case 'f':  buf2[bi++] = '\f'; break;
+                        case 'v':  buf2[bi++] = '\v'; break;
+                        case 'e':
+                        case 'E':  buf2[bi++] = '\033'; break;
+                        case '\\': buf2[bi++] = '\\'; break;
+                        case '\'': buf2[bi++] = '\''; break;
+                        case '"':  buf2[bi++] = '"'; break;
+                        case '0': case '1': case '2': case '3':
+                        case '4': case '5': case '6': case '7': {
+                            unsigned val = *p - '0';
+                            if (*(p+1) >= '0' && *(p+1) <= '7') { p++; val = val*8 + (*p-'0'); }
+                            if (*(p+1) >= '0' && *(p+1) <= '7') { p++; val = val*8 + (*p-'0'); }
+                            buf2[bi++] = (char)val;
+                            break;
+                        }
+                        case 'x': {
+                            p++;
+                            unsigned val = 0;
+                            int n = 0;
+                            while (n < 2 && isxdigit((unsigned char)*p)) {
+                                val = val*16 + (isdigit((unsigned char)*p) ?
+                                    (*p-'0') : (tolower((unsigned char)*p)-'a'+10));
+                                p++; n++;
+                            }
+                            p--;
+                            buf2[bi++] = (char)val;
+                            break;
+                        }
+                        default: buf2[bi++] = '\\'; buf2[bi++] = *p; break;
+                    }
+                    p++;
+                } else {
+                    buf2[bi++] = *p++;
+                }
+            }
+            buf2[bi] = '\0';
+            if (*p == '\'') p++;
+            char *value = strdup(buf2);
+            free(buf2);
+            if (!value) { tokens_free(tokens, count); return NULL; }
+            if (!add_token(&tokens, &count, &capacity, TOK_WORD, value)) return NULL;
+            tokens[count-1].quoted = 1;
+            continue;
         }
 
         // Quoted strings
@@ -299,6 +398,101 @@ Token *lex(const char *input, int *ntokens) {
             }
             continue;
         }
+        /* fd redirection: N>file, N>>file, N<file, N>&M, N<&M, N<&-, N>&- */
+        /* Also {name}>file */
+        if (isdigit((unsigned char)*p) || *p == '{') {
+            const char *fd_start = p;
+            char fd_name[64] = {0};
+            int  fd_num = -1;
+            int  is_named = 0;
+
+            if (*p == '{') {
+                p++;
+                int ni = 0;
+                while (*p && *p != '}' && ni < 63) fd_name[ni++] = *p++;
+                fd_name[ni] = '\0';
+                if (*p == '}') { p++; is_named = 1; }
+                else { p = fd_start; goto word_parse; }
+            } else {
+                /* read digits */
+                int ni = 0;
+                char nbuf[16] = {0};
+                while (isdigit((unsigned char)*p) && ni < 15) nbuf[ni++] = *p++;
+                if (*p == '>' || *p == '<') {
+                    fd_num = atoi(nbuf);
+                } else {
+                    p = fd_start;
+                    goto word_parse;
+                }
+            }
+
+            if (*p == '>') {
+                p++;
+                int is_app = 0;
+                if (*p == '>') { is_app = 1; p++; }
+                if (*p == '&') {
+                    /* N>&M or N>&- */
+                    p++;
+                    char tgt[16] = {0};
+                    int ti = 0;
+                    if (*p == '-') { tgt[0] = '-'; ti = 1; p++; }
+                    else while (isdigit((unsigned char)*p) && ti < 15) tgt[ti++] = *p++;
+                    tgt[ti] = '\0';
+                    /* encode as WORD "Nfd>&Mfd" and use TOK_REDIR_DUP_OUT */
+                    char enc[64];
+                    if (is_named)
+                        snprintf(enc, sizeof(enc), "{%s}&%s", fd_name, tgt);
+                    else
+                        snprintf(enc, sizeof(enc), "%d&%s", fd_num, tgt);
+                    if (!add_token(&tokens, &count, &capacity, TOK_REDIR_DUP_OUT, strdup(enc)))
+                        return NULL;
+                    continue;
+                }
+                /* N>file or N>>file: encode fd in token value, file follows */
+                char enc[64];
+                if (is_named)
+                    snprintf(enc, sizeof(enc), "{%s}", fd_name);
+                else
+                    snprintf(enc, sizeof(enc), "%d", fd_num);
+                TokenType tt2 = is_app ? TOK_REDIR_FD_APP : TOK_REDIR_FD_OUT;
+                if (!add_token(&tokens, &count, &capacity, tt2, strdup(enc)))
+                    return NULL;
+                continue;
+            } else if (*p == '<') {
+                p++;
+                if (*p == '&') {
+                    /* N<&M or N<&- */
+                    p++;
+                    char tgt[16] = {0};
+                    int ti = 0;
+                    if (*p == '-') { tgt[0] = '-'; ti = 1; p++; }
+                    else while (isdigit((unsigned char)*p) && ti < 15) tgt[ti++] = *p++;
+                    tgt[ti] = '\0';
+                    char enc[64];
+                    if (is_named)
+                        snprintf(enc, sizeof(enc), "{%s}&%s", fd_name, tgt);
+                    else
+                        snprintf(enc, sizeof(enc), "%d&%s", fd_num, tgt);
+                    if (!add_token(&tokens, &count, &capacity, TOK_REDIR_DUP_IN, strdup(enc)))
+                        return NULL;
+                    continue;
+                }
+                /* N<file */
+                char enc[64];
+                if (is_named)
+                    snprintf(enc, sizeof(enc), "{%s}", fd_name);
+                else
+                    snprintf(enc, sizeof(enc), "%d", fd_num);
+                if (!add_token(&tokens, &count, &capacity, TOK_REDIR_FD_IN, strdup(enc)))
+                    return NULL;
+                continue;
+            } else {
+                /* not a redirect — backtrack */
+                p = fd_start;
+            }
+        }
+
+        word_parse:
         // Words
         const char *start = p;
         /* handle $(...) as single unit — existing logic */

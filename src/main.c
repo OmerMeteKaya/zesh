@@ -13,7 +13,7 @@ extern char *read_heredoc(const char *delimiter, int expand);
 #include <string.h>
 #include <unistd.h>
 #include <termios.h>
-
+extern time_t g_shell_start_time;
 #include "../include/shell.h"
 #include "../include/input.h"
 #include "../include/alias.h"
@@ -22,12 +22,14 @@ extern char *read_heredoc(const char *delimiter, int expand);
 #include "../include/config.h"
 #include "../include/security.h"
 
+extern Token *lex(const char *input, int *ntokens);
+extern void tokens_free(Token *toks, int n);
 
 void signals_init(void);
 void jobs_init(void);
 int run_script_line(const char *input) {
     if (!input || strlen(input) == 0) return 0;
-
+    g_expand_error = 0;
     /* scalar assignment */
     {
         const char *ri = input;
@@ -45,6 +47,11 @@ int run_script_line(const char *input) {
             Token *ttmp = lex(ri, &ntmp);
             char *expanded = ttmp ? expand_word(ri, last_exit_status) : strdup(ri);
             if (ttmp) tokens_free(ttmp, ntmp);
+            if (g_expand_error) {
+                free(expanded);
+                g_expand_error = 0;
+                return 1;
+            }
             local_var_set(name, expanded ? expanded : ri);
             free(expanded);
             return 0;
@@ -87,7 +94,8 @@ int run_script_line(const char *input) {
         if (tokens[ci].type == TOK_WORD && tokens[ci].value) {
             const char *v = tokens[ci].value;
             if (strcmp(v, "if")    == 0 || strcmp(v, "while") == 0 ||
-                strcmp(v, "until") == 0 || strcmp(v, "for")   == 0 || strcmp(v, "case") == 0) {
+                strcmp(v, "until") == 0 || strcmp(v, "for")   == 0 || strcmp(v, "case") == 0 ||
+                strcmp(v, "select") == 0 || strcmp(v, "time") == 0) {
                 has_compound = 1;
                 break;
                 }
@@ -167,11 +175,32 @@ void fill_heredocs(CmdList *list) {
                     cmd->heredoc_delim,
                     cmd->heredoc_expand);
             }
+            /* here-string: expand and convert to heredoc_content */
+            if (cmd->infile &&
+                strncmp(cmd->infile, "\x01HERESTRING\x01", 12) == 0) {
+                const char *hs = cmd->infile + 12;
+                char *expanded = expand_word(hs, last_exit_status);
+                const char *content = expanded ? expanded : hs;
+                size_t clen = strlen(content);
+                char *hsc = malloc(clen + 2);
+                if (hsc) {
+                    memcpy(hsc, content, clen);
+                    hsc[clen]   = '\n';
+                    hsc[clen+1] = '\0';
+                    cmd->heredoc_content = hsc;
+                    cmd->heredoc_expand  = 0;
+                }
+                free(expanded);
+                free(cmd->infile);
+                cmd->infile = NULL;
+                }
         }
     }
 }
 
 int main(int argc, char *argv[]) {
+    g_shell_start_time = time(NULL);
+    srand((unsigned)time(NULL) ^ (unsigned)getpid());
     signals_init();
     jobs_init();
 
@@ -186,25 +215,25 @@ int main(int argc, char *argv[]) {
 
     char mysh_dir[512];
     if (home)
-        snprintf(mysh_dir, sizeof(mysh_dir), "%s/.mysh", home);
+        snprintf(mysh_dir, sizeof(mysh_dir), "%s/.zesh", home);
     else
-        snprintf(mysh_dir, sizeof(mysh_dir), ".mysh");
+        snprintf(mysh_dir, sizeof(mysh_dir), ".zesh");
     mkdir(mysh_dir, 0755);
 
     alias_init();
 
     char config_path[512];
     if (home)
-        snprintf(config_path, sizeof(config_path), "%s/.mysh/config", home);
+        snprintf(config_path, sizeof(config_path), "%s/.zesh/config", home);
     else
-        snprintf(config_path, sizeof(config_path), ".mysh/config");
+        snprintf(config_path, sizeof(config_path), ".zesh/config");
     config_load(config_path);
 
     char plugin_dir[512];
     if (home)
-        snprintf(plugin_dir, sizeof(plugin_dir), "%s/.mysh/plugins", home);
+        snprintf(plugin_dir, sizeof(plugin_dir), "%s/.zesh/plugins", home);
     else
-        snprintf(plugin_dir, sizeof(plugin_dir), ".mysh/plugins");
+        snprintf(plugin_dir, sizeof(plugin_dir), ".zesh/plugins");
     plugins_init(plugin_dir);
 
     char rc_path[512];
@@ -221,7 +250,7 @@ int main(int argc, char *argv[]) {
     if (argc >= 2) {
         FILE *f = fopen(argv[1], "r");
         if (!f) {
-            fprintf(stderr, "mysh: %s: cannot open file\n", argv[1]);
+            fprintf(stderr, "zesh: %s: cannot open file\n", argv[1]);
             return 1;
         }
 
@@ -232,6 +261,7 @@ int main(int argc, char *argv[]) {
         int  exit_status = 0;
 
         while (fgets(line, sizeof(line), f)) {
+            g_current_lineno++;
             char *p = line;
             while (*p == ' ' || *p == '\t') p++;
             if (*p == '#' || *p == '\n' || *p == '\0') continue;
@@ -239,61 +269,30 @@ int main(int argc, char *argv[]) {
             line[strcspn(line, "\n")] = '\0';
 
             {
-                const char *tr = line;
-                while (*tr == ' ' || *tr == '\t') tr++;
-                size_t tlen;
-
-                tlen = strlen("if");
-                if (strncmp(tr, "if", tlen) == 0 &&
-                    (tr[tlen]==' '||tr[tlen]=='\t'||
-                     tr[tlen]=='\0'||tr[tlen]=='\n')) depth++;
-
-                tlen = strlen("while");
-                if (strncmp(tr, "while", tlen) == 0 &&
-                    (tr[tlen]==' '||tr[tlen]=='\t'||
-                     tr[tlen]=='\0'||tr[tlen]=='\n')) depth++;
-
-                tlen = strlen("until");
-                if (strncmp(tr, "until", tlen) == 0 &&
-                    (tr[tlen]==' '||tr[tlen]=='\t'||
-                     tr[tlen]=='\0'||tr[tlen]=='\n')) depth++;
-
-                tlen = strlen("for");
-                if (strncmp(tr, "for", tlen) == 0 &&
-                    (tr[tlen]==' '||tr[tlen]=='\t'||
-                     tr[tlen]=='\0'||tr[tlen]=='\n')) depth++;
-
-                tlen = strlen("fi");
-                if (strncmp(tr, "fi", tlen) == 0 &&
-                    (tr[tlen]==' '||tr[tlen]=='\t'||
-                     tr[tlen]=='\0'||tr[tlen]=='\n')) depth--;
-
-                tlen = strlen("done");
-                if (strncmp(tr, "done", tlen) == 0 &&
-                    (tr[tlen]==' '||tr[tlen]=='\t'||
-                     tr[tlen]=='\0'||tr[tlen]=='\n')) depth--;
-
-                tlen = strlen("case");
-                if (strncmp(tr, "case", tlen) == 0 &&
-                    (tr[tlen]==' '||tr[tlen]=='\t'||
-                     tr[tlen]=='\0'||tr[tlen]=='\n')) depth++;
-
-                tlen = strlen("esac");
-                if (strncmp(tr, "esac", tlen) == 0 &&
-                    (tr[tlen]==' '||tr[tlen]=='\t'||
-                     tr[tlen]=='\0'||tr[tlen]=='\n')) depth--;
-                
-                {
-                    const char *tr2 = tr;
-                    while (*tr2 && (isalnum((unsigned char)*tr2) || *tr2 == '_')) tr2++;
-                    if (*tr2 == '(' && *(tr2+1) == ')') depth++;
+                int ntok2 = 0;
+                Token *toks2 = lex(line, &ntok2);
+                if (toks2) {
+                    for (int ti = 0; ti < ntok2; ti++) {
+                        if (toks2[ti].type != TOK_WORD || !toks2[ti].value
+                            || toks2[ti].quoted) continue;
+                        const char *v = toks2[ti].value;
+                        if (strcmp(v,"if")==0    || strcmp(v,"while")==0  ||
+                            strcmp(v,"until")==0 || strcmp(v,"for")==0    ||
+                            strcmp(v,"case")==0  || strcmp(v,"select")==0)
+                            depth++;
+                        else if (strcmp(v,"fi")==0   || strcmp(v,"done")==0 ||
+                                 strcmp(v,"esac")==0) depth--;
+                        else if (strcmp(v,"{")==0) depth++;
+                        else if (strcmp(v,"}")==0) depth--;
+                    }
+                    tokens_free(toks2, ntok2);
                 }
             }
 
             if (!collecting && depth > 0) {
                 collecting = 1;
                 strncpy(collected, line, sizeof(collected) - 1);
-                strncat(collected, " ; ",
+                strncat(collected, "\n",
                         sizeof(collected) - strlen(collected) - 1);
                 continue;
             }
@@ -301,7 +300,7 @@ int main(int argc, char *argv[]) {
             if (collecting) {
                 strncat(collected, line,
                         sizeof(collected) - strlen(collected) - 1);
-                strncat(collected, " ; ",
+                strncat(collected, "\n",
                         sizeof(collected) - strlen(collected) - 1);
 
                 if (depth <= 0) {
@@ -323,6 +322,7 @@ int main(int argc, char *argv[]) {
     /*  REPL                                                             */
     /* ---------------------------------------------------------------- */
     while (1) {
+        g_current_lineno++;
        int from_block = 0;
         /* --- Build prompt --- */
         char prompt[512];
@@ -375,7 +375,7 @@ int main(int argc, char *argv[]) {
                     time_part, user_part, display);
             }
         } else {
-            snprintf(prompt, sizeof(prompt), "➜ mysh> ");
+            snprintf(prompt, sizeof(prompt), "➜ zesh> ");
         }
 
         /* --- Read input (multiline collector) --- */
@@ -480,7 +480,8 @@ int main(int argc, char *argv[]) {
             if (tokens[ci].type == TOK_WORD && tokens[ci].value) {
                 const char *v = tokens[ci].value;
                 if (strcmp(v, "if")    == 0 || strcmp(v, "while") == 0 ||
-                    strcmp(v, "until") == 0 || strcmp(v, "for")   == 0 || strcmp(v, "case") == 0) {
+                    strcmp(v, "until") == 0 || strcmp(v, "for")   == 0 || strcmp(v, "case") == 0 ||
+                    strcmp(v, "select") == 0 || strcmp(v, "time") == 0) {
                     has_compound = 1;
                     break;
                     }

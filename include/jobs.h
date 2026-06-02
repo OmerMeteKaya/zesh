@@ -31,6 +31,7 @@ void  job_remove(pid_t pgid);
 void  jobs_print(void);
 Job  *job_get_by_id(int id);
 Job  *job_find_by_pgid(pid_t pgid);
+void  jobs_disown_all(void);
 
 /* signals.c */
 void signals_init(void);

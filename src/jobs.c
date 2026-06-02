@@ -115,3 +115,8 @@ Job *job_find_by_pgid(pid_t pgid) {
     }
     return NULL;
 }
+
+void jobs_disown_all(void) {
+    for (int i = 0; i < MAX_JOBS; i++)
+        table[i].active = 0;
+}

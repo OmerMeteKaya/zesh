@@ -2,6 +2,7 @@
 // Created by mete on 23.04.2026.
 //
 
+#define _GNU_SOURCE
 #include <stdio.h>
 #include <sys/wait.h>
 #include <unistd.h>

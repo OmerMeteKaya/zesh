@@ -4,7 +4,7 @@ LDFLAGS = -lsqlite3 -lcurl -lncurses -ldl
 
 SRC  = $(wildcard src/*.c)
 OBJ  = $(SRC:.c=.o)
-BIN  = mysh
+BIN  = zesh
 
 all: $(BIN)
 

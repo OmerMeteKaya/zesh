@@ -2,6 +2,7 @@
 // Created by mete on 26.04.2026.
 //
 
+#define _GNU_SOURCE
 #include "../include/shell.h"
 #include "../include/signals.h"
 #include <stdlib.h>
@@ -13,11 +14,14 @@
 #include <glob.h>
 #include <sys/wait.h>
 #include <sys/stat.h>
+#include <time.h>
+#include <pwd.h>
 
 #define MAX_ARRAYS     64
 #define MAX_ARRAY_SIZE 256
 #define MAX_FUNCS 64
-
+int g_current_lineno = 0;
+int g_expand_error = 0;
 typedef struct {
     char  name[64];
     char *values[MAX_ARRAY_SIZE];
@@ -60,7 +64,7 @@ void func_define(const char *name, CmdList *body) {
             return;
         }
     }
-    fprintf(stderr, "mysh: function table full\n");
+    fprintf(stderr, "zesh: function table full\n");
 }
 
 FuncDef *func_get(const char *name) {
@@ -169,6 +173,156 @@ static int local_var_count = 0;
 
 static LocalArray arrays[MAX_ARRAYS];
 
+/* declared variable attribute table */
+VarEntry g_declared_vars[MAX_DECLARED_VARS];
+int      g_declared_var_count = 0;
+
+int var_declare(const char *name, const char *value, int attrs) {
+    /* update existing entry */
+    for (int i = 0; i < g_declared_var_count; i++) {
+        if (g_declared_vars[i].active &&
+            strcmp(g_declared_vars[i].name, name) == 0) {
+            if (g_declared_vars[i].attrs & VAR_ATTR_READONLY)
+                return 1;  /* read-only */
+            if (value) {
+                if (attrs & VAR_ATTR_INTEGER) {
+                    /* coerce to integer */
+                    long v = atol(value);
+                    char ibuf[32];
+                    snprintf(ibuf, sizeof(ibuf), "%ld", v);
+                    strncpy(g_declared_vars[i].value, ibuf, sizeof(g_declared_vars[i].value)-1);
+                } else if (attrs & VAR_ATTR_UPPERCASE) {
+                    char *up = strdup(value);
+                    if (up) {
+                        for (char *q = up; *q; q++) *q = (char)toupper((unsigned char)*q);
+                        strncpy(g_declared_vars[i].value, up, sizeof(g_declared_vars[i].value)-1);
+                        free(up);
+                    }
+                } else if (attrs & VAR_ATTR_LOWERCASE) {
+                    char *lo = strdup(value);
+                    if (lo) {
+                        for (char *q = lo; *q; q++) *q = (char)tolower((unsigned char)*q);
+                        strncpy(g_declared_vars[i].value, lo, sizeof(g_declared_vars[i].value)-1);
+                        free(lo);
+                    }
+                } else {
+                    strncpy(g_declared_vars[i].value, value, sizeof(g_declared_vars[i].value)-1);
+                }
+            }
+            g_declared_vars[i].attrs |= attrs;
+            if (attrs & VAR_ATTR_EXPORT)
+                setenv(name, g_declared_vars[i].value, 1);
+            return 0;
+        }
+    }
+    /* new entry */
+    if (g_declared_var_count >= MAX_DECLARED_VARS) return 1;
+    VarEntry *e = &g_declared_vars[g_declared_var_count++];
+    memset(e, 0, sizeof(*e));
+    strncpy(e->name, name, sizeof(e->name)-1);
+    const char *cur = var_get(name);
+    const char *init_val = value ? value : (cur ? cur : "");
+    if (attrs & VAR_ATTR_INTEGER) {
+        char *res = eval_arithmetic(init_val);
+        if (res) { strncpy(e->value, res, sizeof(e->value)-1); free(res); }
+    } else if (attrs & VAR_ATTR_UPPERCASE) {
+        char *up = strdup(init_val);
+        if (up) {
+            for (char *q = up; *q; q++) *q = (char)toupper((unsigned char)*q);
+            strncpy(e->value, up, sizeof(e->value)-1);
+            free(up);
+        }
+    } else if (attrs & VAR_ATTR_LOWERCASE) {
+        char *lo = strdup(init_val);
+        if (lo) {
+            for (char *q = lo; *q; q++) *q = (char)tolower((unsigned char)*q);
+            strncpy(e->value, lo, sizeof(e->value)-1);
+            free(lo);
+        }
+    } else {
+        strncpy(e->value, init_val, sizeof(e->value)-1);
+    }
+    e->attrs  = attrs;
+    e->active = 1;
+    /* set local var directly (bypass readonly check for initial declaration) */
+    for (int i = 0; i < local_var_count; i++) {
+        if (local_vars[i].active && strcmp(local_vars[i].name, name) == 0) {
+            strncpy(local_vars[i].value, e->value, sizeof(local_vars[i].value)-1);
+            goto done_declare;
+        }
+    }
+    if (local_var_count < MAX_LOCAL_VARS) {
+        strncpy(local_vars[local_var_count].name, name, sizeof(local_vars[0].name)-1);
+        strncpy(local_vars[local_var_count].value, e->value, sizeof(local_vars[0].value)-1);
+        local_vars[local_var_count].active = 1;
+        local_var_count++;
+    }
+done_declare:
+    if (attrs & VAR_ATTR_EXPORT)
+        setenv(name, e->value, 1);
+    return 0;
+}
+
+int var_get_attrs(const char *name) {
+    for (int i = 0; i < g_declared_var_count; i++) {
+        if (g_declared_vars[i].active &&
+            strcmp(g_declared_vars[i].name, name) == 0)
+            return g_declared_vars[i].attrs;
+    }
+    return 0;
+}
+
+void var_list(int attrs_filter) {
+    for (int i = 0; i < g_declared_var_count; i++) {
+        if (!g_declared_vars[i].active) continue;
+        if (attrs_filter && !(g_declared_vars[i].attrs & attrs_filter)) continue;
+        char flags[8] = "-";
+        int fi = 0;
+        if (g_declared_vars[i].attrs & VAR_ATTR_INTEGER)  flags[fi++] = 'i';
+        if (g_declared_vars[i].attrs & VAR_ATTR_READONLY) flags[fi++] = 'r';
+        if (g_declared_vars[i].attrs & VAR_ATTR_EXPORT)   flags[fi++] = 'x';
+        if (g_declared_vars[i].attrs & VAR_ATTR_NAMEREF)  flags[fi++] = 'n';
+        flags[fi] = '\0';
+        printf("declare -%s %s=\"%s\"\n", fi ? flags : "-",
+               g_declared_vars[i].name, g_declared_vars[i].value);
+    }
+}
+
+/* special variable state */
+time_t g_shell_start_time = 0;
+char g_current_funcname[256] = {0};
+char g_current_source[4096]  = {0};
+pid_t g_last_bg_pid = 0;  /* $! */
+
+static const char *get_special_var(const char *name) {
+    static char svbuf[64];
+    if (strcmp(name, "RANDOM") == 0) {
+        snprintf(svbuf, sizeof(svbuf), "%d", rand() % 32768);
+        return svbuf;
+    }
+    if (strcmp(name, "!") == 0) {
+        snprintf(svbuf, sizeof(svbuf), "%d", (int)g_last_bg_pid);
+        return svbuf;
+    }
+    if (strcmp(name, "SECONDS") == 0) {
+        if (!g_shell_start_time) g_shell_start_time = time(NULL);
+        snprintf(svbuf, sizeof(svbuf), "%ld",
+                 (long)(time(NULL) - g_shell_start_time));
+        return svbuf;
+    }
+    if (strcmp(name, "LINENO") == 0) {
+        snprintf(svbuf, sizeof(svbuf), "%d", g_current_lineno);
+        return svbuf;
+    }
+    if (strcmp(name, "BASH_SOURCE") == 0) {
+        return g_current_source[0] ? g_current_source : "zesh";
+    }
+    if (strcmp(name, "FUNCNAME") == 0) {
+        return g_current_funcname[0] ? g_current_funcname : "";
+    }
+    return NULL;
+}
+
 void arr_set(const char *name, int index, const char *value) {
     if (index < 0 || index >= MAX_ARRAY_SIZE) return;
     /* find existing */
@@ -232,6 +386,7 @@ char *expand_process_substitution(const char *cmd_str, int write_mode) {
         int pipefd[2];
         if (pipe(pipefd) < 0) return NULL;
 
+        fflush(NULL);
         pid_t pid = fork();
         if (pid < 0) { close(pipefd[0]); close(pipefd[1]); return NULL; }
 
@@ -275,6 +430,7 @@ char *expand_process_substitution(const char *cmd_str, int write_mode) {
     int pipefd[2];
     if (pipe(pipefd) < 0) return NULL;
 
+    fflush(NULL);
     pid_t pid = fork();
     if (pid < 0) {
         close(pipefd[0]);
@@ -285,7 +441,7 @@ char *expand_process_substitution(const char *cmd_str, int write_mode) {
     if (pid == 0) {
         /* child */
         signals_child();
-        
+
         /* <(...): child writes stdout to pipe write end */
         close(pipefd[0]);
         dup2(pipefd[1], STDOUT_FILENO);
@@ -342,23 +498,98 @@ char *expand_process_substitution(const char *cmd_str, int write_mode) {
 }
 
 void local_var_set(const char *name, const char *value) {
+    if (!value) value = "";
+
+    /* check if integer-declared: coerce arithmetic */
+    const char *store_val = value;
+    char arith_buf[64] = {0};
+    for (int di = 0; di < g_declared_var_count; di++) {
+        if (g_declared_vars[di].active &&
+            (g_declared_vars[di].attrs & VAR_ATTR_INTEGER) &&
+            strcmp(g_declared_vars[di].name, name) == 0) {
+            char *res = eval_arithmetic(value);
+            if (res) {
+                strncpy(arith_buf, res, sizeof(arith_buf)-1);
+                free(res);
+                store_val = arith_buf;
+            }
+            /* update declared var entry too */
+            strncpy(g_declared_vars[di].value, store_val,
+                    sizeof(g_declared_vars[di].value)-1);
+            if (g_declared_vars[di].attrs & VAR_ATTR_EXPORT)
+                setenv(name, store_val, 1);
+            break;
+        }
+    }
+    /* uppercase/lowercase attribute */
+    char case_buf[256] = {0};
+    for (int di = 0; di < g_declared_var_count; di++) {
+        if (g_declared_vars[di].active &&
+            strcmp(g_declared_vars[di].name, name) == 0) {
+            if (g_declared_vars[di].attrs & VAR_ATTR_UPPERCASE) {
+                strncpy(case_buf, store_val, sizeof(case_buf)-1);
+                for (char *q = case_buf; *q; q++) *q = (char)toupper((unsigned char)*q);
+                store_val = case_buf;
+            } else if (g_declared_vars[di].attrs & VAR_ATTR_LOWERCASE) {
+                strncpy(case_buf, store_val, sizeof(case_buf)-1);
+                for (char *q = case_buf; *q; q++) *q = (char)tolower((unsigned char)*q);
+                store_val = case_buf;
+            }
+            break;
+            }
+    }
+    /* check readonly */
+    for (int di = 0; di < g_declared_var_count; di++) {
+        if (g_declared_vars[di].active &&
+            (g_declared_vars[di].attrs & VAR_ATTR_READONLY) &&
+            strcmp(g_declared_vars[di].name, name) == 0) {
+            fprintf(stderr, "zesh: %s: readonly variable\n", name);
+            return;
+        }
+    }
+
     for (int i = 0; i < local_var_count; i++) {
         if (local_vars[i].active &&
             strcmp(local_vars[i].name, name) == 0) {
-            strncpy(local_vars[i].value, value,
+            strncpy(local_vars[i].value, store_val,
                     sizeof(local_vars[i].value)-1);
             return;
-            }
+        }
     }
     if (local_var_count < MAX_LOCAL_VARS) {
         strncpy(local_vars[local_var_count].name, name,
                 sizeof(local_vars[0].name)-1);
-        strncpy(local_vars[local_var_count].value, value,
+        strncpy(local_vars[local_var_count].value, store_val,
                 sizeof(local_vars[0].value)-1);
         local_vars[local_var_count].active = 1;
         local_var_count++;
     }
 }
+/* ---- local variable scope stack ---- */
+#define MAX_SCOPE_DEPTH 32
+typedef struct {
+    LocalVar  vars[MAX_LOCAL_VARS];
+    int       count;
+} ScopeFrame;
+
+static ScopeFrame scope_stack[MAX_SCOPE_DEPTH];
+static int        scope_depth = 0;
+
+void scope_push(void) {
+    if (scope_depth >= MAX_SCOPE_DEPTH) return;
+    ScopeFrame *frame = &scope_stack[scope_depth++];
+    frame->count = local_var_count;
+    memcpy(frame->vars, local_vars, local_var_count * sizeof(LocalVar));
+}
+
+void scope_pop(void) {
+    if (scope_depth <= 0) return;
+    ScopeFrame *frame = &scope_stack[--scope_depth];
+    /* restore: free any string copies if we used heap (we don't here — static bufs) */
+    local_var_count = frame->count;
+    memcpy(local_vars, frame->vars, local_var_count * sizeof(LocalVar));
+}
+
 /* positional parameters — $1 $2 ... $@ $* $# */
 #define MAX_POSITIONAL 64
 static char *positional_params[MAX_POSITIONAL];
@@ -378,20 +609,66 @@ void positional_set(char **args, int count) {
 void positional_clear(void) {
     positional_set(NULL, 0);
 }
-/* get variable — local first, then env */
+
+int positional_get_count(void) { return positional_count; }
+const char *positional_get(int idx) {
+    if (idx < 0 || idx >= positional_count) return "";
+    return positional_params[idx] ? positional_params[idx] : "";
+}
+/* get variable — local first, then env, then special */
 const char *var_get(const char *name) {
+    /* special variables */
+    if (strcmp(name, "RANDOM") == 0 ||
+        strcmp(name, "LINENO") == 0 ||
+        strcmp(name, "BASH_SOURCE") == 0 ||
+        strcmp(name, "FUNCNAME") == 0 ||
+        strcmp(name, "SECONDS") == 0 ||
+        strcmp(name, "!") == 0) {
+        return get_special_var(name);
+    }
+    /* nameref: follow one level of indirection */
+    for (int i = 0; i < g_declared_var_count; i++) {
+        if (g_declared_vars[i].active &&
+            (g_declared_vars[i].attrs & VAR_ATTR_NAMEREF) &&
+            strcmp(g_declared_vars[i].name, name) == 0) {
+            /* value holds the name of the target variable */
+            return var_get(g_declared_vars[i].value);
+        }
+    }
     for (int i = 0; i < local_var_count; i++) {
         if (local_vars[i].active &&
             strcmp(local_vars[i].name, name) == 0) {
             return local_vars[i].value;
         }
     }
+    /* check declared vars */
+    for (int i = 0; i < g_declared_var_count; i++) {
+        if (g_declared_vars[i].active &&
+            strcmp(g_declared_vars[i].name, name) == 0) {
+            return g_declared_vars[i].value;
+        }
+    }
     const char *env = getenv(name);
     return env;
 }
 
-
-
+void var_unset(const char *name) {
+    unsetenv(name);
+    for (int i = 0; i < local_var_count; i++) {
+        if (local_vars[i].active &&
+            strcmp(local_vars[i].name, name) == 0) {
+            local_vars[i].active = 0;
+            break;
+        }
+    }
+    for (int i = 0; i < g_declared_var_count; i++) {
+        if (g_declared_vars[i].active &&
+            strcmp(g_declared_vars[i].name, name) == 0) {
+            g_declared_vars[i].active = 0;
+            break;
+        }
+    }
+}
 
 static char *itoa(int value) {
     static char buf[32];
@@ -790,7 +1067,8 @@ static char *run_command_substitution(const char *cmd_str) {
     /* Create pipe to capture child stdout */
     int pipefd[2];
     if (pipe(pipefd) < 0) return strdup("");
-
+    g_expand_error = 0;
+    fflush(NULL);
     pid_t pid = fork();
     if (pid < 0) {
         close(pipefd[0]); close(pipefd[1]);
@@ -813,10 +1091,16 @@ static char *run_command_substitution(const char *cmd_str) {
         extern void tokens_free(Token *toks, int n);
         extern int last_exit_status;
 
+        g_expand_error = 0;
         int ntokens;
         Token *toks = lex(cmd_str, &ntokens);
         if (toks) {
             toks = glob_expand_tokens(toks, &ntokens, last_exit_status);
+            if (g_expand_error) {
+                fflush(stdout);
+                tokens_free(toks, ntokens);
+                _exit(1);
+            }
             if (toks) {
                 CmdList *list = parse_list(toks, ntokens);
                 if (list) {
@@ -826,7 +1110,12 @@ static char *run_command_substitution(const char *cmd_str) {
                 tokens_free(toks, ntokens);
             }
         }
-        _exit(0);
+        if (g_expand_error) {
+            fflush(stdout);
+            _exit(1);
+        }
+        fflush(stdout);
+        _exit(last_exit_status);
     }
 
     /* parent: read from pipe read end */
@@ -847,7 +1136,13 @@ static char *run_command_substitution(const char *cmd_str) {
         }
     }
     close(pipefd[0]);
-    waitpid(pid, NULL, 0);
+    int status = 0;
+    waitpid(pid, &status, 0);
+    g_expand_error = 0;
+    if (WIFEXITED(status)) {
+        extern int last_exit_status;
+        last_exit_status = WEXITSTATUS(status);
+    }
 
     buf[total] = '\0';
 
@@ -859,14 +1154,81 @@ static char *run_command_substitution(const char *cmd_str) {
     return buf;
 }
 
+static char *decode_ansi_c_quoting(const char *str) {
+    if (!str || strncmp(str, "$'", 2) != 0) return NULL;
+
+    const char *p = str + 2;
+    char *buf = malloc(strlen(str) + 1);
+    if (!buf) return NULL;
+    size_t bi = 0;
+
+    while (*p && *p != '\'') {
+        if (*p == '\\' && *(p+1)) {
+            p++;
+            switch (*p) {
+                case 'n':  buf[bi++] = '\n'; break;
+                case 't':  buf[bi++] = '\t'; break;
+                case 'r':  buf[bi++] = '\r'; break;
+                case 'a':  buf[bi++] = '\a'; break;
+                case 'b':  buf[bi++] = '\b'; break;
+                case 'f':  buf[bi++] = '\f'; break;
+                case 'v':  buf[bi++] = '\v'; break;
+                case 'e':
+                case 'E':  buf[bi++] = '\033'; break;
+                case '\\': buf[bi++] = '\\'; break;
+                case '\'': buf[bi++] = '\''; break;
+                case '"':  buf[bi++] = '"'; break;
+                case '0': case '1': case '2': case '3':
+                case '4': case '5': case '6': case '7': {
+                    unsigned val = *p - '0';
+                    if (*(p+1) >= '0' && *(p+1) <= '7') { p++; val = val*8 + (*p-'0'); }
+                    if (*(p+1) >= '0' && *(p+1) <= '7') { p++; val = val*8 + (*p-'0'); }
+                    buf[bi++] = (char)val;
+                    break;
+                }
+                case 'x': {
+                    p++;
+                    unsigned val = 0;
+                    int n = 0;
+                    while (n < 2 && isxdigit((unsigned char)*p)) {
+                        val = val*16 + (isdigit((unsigned char)*p) ?
+                            (*p-'0') : (tolower((unsigned char)*p)-'a'+10));
+                        p++; n++;
+                    }
+                    p--;
+                    buf[bi++] = (char)val;
+                    break;
+                }
+                default: buf[bi++] = '\\'; buf[bi++] = *p; break;
+            }
+            p++;
+        } else {
+            buf[bi++] = *p++;
+        }
+    }
+    buf[bi] = '\0';
+
+    if (*p == '\'') {
+        return buf;
+    }
+    free(buf);
+    return NULL;
+}
+
 char *expand_word(const char *word, int last_exit_status) {
     if (!word) return NULL;
-    
+
     size_t word_len = strlen(word);
-    
+
+    // Handle ANSI-C quoted strings ($'...')
+    char *ansi_decoded = decode_ansi_c_quoting(word);
+    if (ansi_decoded) {
+        return ansi_decoded;
+    }
+
     // Handle single-quoted strings - no expansion
     if (word_len >= 2 && word[0] == '\'' && word[word_len-1] == '\'') {
-        return strdup(word);
+        return strndup(word + 1, word_len - 2);
     }
     
     char *buf = malloc(256);
@@ -913,16 +1275,69 @@ char *expand_word(const char *word, int last_exit_status) {
             continue;
         }
 
-        // Handle tilde expansion (only at start of word or after slash, and not in double quotes for mid-word)
+        /* tilde expansion: ~ and ~username */
         if (*p == '~' && (p == word || *(p-1) == '/') && !in_double_quotes) {
-            const char *home = getenv("HOME");
-            if (!home) home = "";
-            
-            if (append_str(&buf, &len, &capacity, home) < 0) {
-                free(buf);
+            p++;
+
+            /* if username starts with $, expand variable first */
+            if (*p == '$') {
+                p++;
+                const char *vstart = p;
+                while (*p && (isalnum((unsigned char)*p) || *p == '_')) p++;
+                size_t vlen = p - vstart;
+                char vname[64] = {0};
+                if (vlen > 0 && vlen < 64) strncpy(vname, vstart, vlen);
+                const char *vval = var_get(vname);
+                const char *uname = vval ? vval : "";
+                /* now do passwd lookup with expanded username */
+                struct passwd *pw = getpwnam(uname);
+                if (pw) {
+                    append_str(&buf, &len, &capacity, pw->pw_dir);
+                } else {
+                    /* unknown — emit ~$varname literally */
+                    append_str(&buf, &len, &capacity, "~");
+                    append_str(&buf, &len, &capacity, "$");
+                    append_str(&buf, &len, &capacity, vname);
+                }
+                continue;
+            }
+
+            /* collect optional username */
+            const char *uname_start = p;
+            while (*p && *p != '/' && *p != ':' && !isspace((unsigned char)*p) &&
+                   *p != '\0') p++;
+            size_t uname_len = p - uname_start;
+
+            const char *home_dir = NULL;
+            char *pw_buf = NULL;
+            if (uname_len == 0) {
+                /* bare ~ → $HOME */
+                home_dir = getenv("HOME");
+                if (!home_dir) home_dir = "";
+            } else {
+                /* ~username → lookup passwd */
+                char uname[256] = {0};
+                if (uname_len < sizeof(uname))
+                    strncpy(uname, uname_start, uname_len);
+                struct passwd *pw = getpwnam(uname);
+                if (pw) {
+                    pw_buf = strdup(pw->pw_dir);
+                    home_dir = pw_buf;
+                } else {
+                    /* unknown user — emit literal ~username */
+                    append_str(&buf, &len, &capacity, "~");
+                    char tmp2[256] = {0};
+                    strncpy(tmp2, uname_start, uname_len);
+                    append_str(&buf, &len, &capacity, tmp2);
+                    free(pw_buf);
+                    continue;
+                }
+            }
+            if (append_str(&buf, &len, &capacity, home_dir) < 0) {
+                free(pw_buf); free(buf);
                 return strdup(word);
             }
-            p++;
+            free(pw_buf);
             continue;
         }
 
@@ -971,6 +1386,14 @@ char *expand_word(const char *word, int last_exit_status) {
             /* $$ */
             if (*p == '$') {
                 char *s = itoa(getpid());
+                if (s) { append_str(&buf, &len, &capacity, s); free(s); }
+                p++;
+                continue;
+            }
+
+            /* $! — last background PID */
+            if (*p == '!') {
+                char *s = itoa((int)g_last_bg_pid);
                 if (s) { append_str(&buf, &len, &capacity, s); free(s); }
                 p++;
                 continue;
@@ -1032,19 +1455,135 @@ char *expand_word(const char *word, int last_exit_status) {
                 p++;
                 const char *var_start = p;
 
-                /* read var name — stop at }, [, # */
-                while (*p && *p != '}' && *p != '[') p++;
+                /* ${#var} or ${#arr[@]} — length prefix */
+                int get_length = 0;
+                if (*p == '#' && *(p+1) != '}') {
+                    get_length = 1;
+                    p++;
+                    var_start = p;
+                }
+
+                /* read var name — stop at }, [, :, @, % etc. */
+                while (*p && *p != '}' && *p != '[' &&
+                       *p != ':' && *p != '@' && *p != '%' && *p != '#') p++;
 
                 size_t var_len = p - var_start;
                 char var_name[64] = {0};
                 if (var_len > 0 && var_len < 64)
                     strncpy(var_name, var_start, var_len);
 
-                /* ${#arr[@]} or ${#var} — length */
-                int get_length = 0;
-                if (var_name[0] == '#') {
-                    get_length = 1;
-                    memmove(var_name, var_name + 1, strlen(var_name));
+                /* ${var@Q}, ${var@U}, ${var@L} transforms */
+                if (*p == '@') {
+                    p++;
+                    char op = *p;
+                    if (op) p++;
+                    if (*p == '}') p++;
+                    const char *v = var_get(var_name);
+                    if (!v) v = "";
+                    if (op == 'Q') {
+                        /* single-quote the value */
+                        append_str(&buf, &len, &capacity, "'");
+                        /* escape single quotes within */
+                        for (const char *q = v; *q; q++) {
+                            if (*q == '\'') {
+                                append_str(&buf, &len, &capacity, "'\\''");
+                            } else {
+                                char tmp[2] = {*q, 0};
+                                append_str(&buf, &len, &capacity, tmp);
+                            }
+                        }
+                        append_str(&buf, &len, &capacity, "'");
+                    } else if (op == 'U') {
+                        char *upper = strdup(v);
+                        if (upper) {
+                            for (char *q = upper; *q; q++) *q = (char)toupper((unsigned char)*q);
+                            append_str(&buf, &len, &capacity, upper);
+                            free(upper);
+                        }
+                    } else if (op == 'L') {
+                        char *lower = strdup(v);
+                        if (lower) {
+                            for (char *q = lower; *q; q++) *q = (char)tolower((unsigned char)*q);
+                            append_str(&buf, &len, &capacity, lower);
+                            free(lower);
+                        }
+                    } else {
+                        append_str(&buf, &len, &capacity, v);
+                    }
+                    continue;
+                }
+
+                /* ${var:-default}, ${var:=default}, ${var:+alt}, ${var:?err}
+                   also ${var-default} etc. (without colon — only test unset) */
+                if (*p == ':' || (*p != '}' && *p != '[' &&
+                    (*p == '-' || *p == '=' || *p == '+' || *p == '?'))) {
+                    int colon = (*p == ':');
+                    if (colon) p++;
+                    char op2 = *p;
+                    if (op2 == '-' || op2 == '=' || op2 == '+' || op2 == '?') {
+                        p++;
+                        /* collect the word up to matching } */
+                        const char *word_start = p;
+                        int brace_depth2 = 1;
+                        while (*p && brace_depth2 > 0) {
+                            if (*p == '{') brace_depth2++;
+                            else if (*p == '}') { brace_depth2--; if (brace_depth2==0) break; }
+                            p++;
+                        }
+                        size_t wlen = p - word_start;
+                        char *word_val = strndup(word_start, wlen);
+                        if (*p == '}') p++;
+
+                        const char *cur = var_get(var_name);
+                        int is_set   = (cur != NULL);
+                        int is_empty = (!cur || cur[0] == '\0');
+                        int unset_or_empty = colon ? (!is_set || is_empty) : !is_set;
+
+                        char *expanded_word = word_val ? expand_word(word_val, last_exit_status) : strdup("");
+                        free(word_val);
+                        const char *use = expanded_word ? expanded_word : "";
+
+                        if (op2 == '-') {
+                            if (unset_or_empty)
+                                append_str(&buf, &len, &capacity, use);
+                            else
+                                append_str(&buf, &len, &capacity, cur);
+                        } else if (op2 == '=') {
+                            if (unset_or_empty) {
+                                local_var_set(var_name, use);
+                                setenv(var_name, use, 1);
+                                append_str(&buf, &len, &capacity, use);
+                            } else {
+                                append_str(&buf, &len, &capacity, cur);
+                            }
+                        } else if (op2 == '+') {
+                            if (!unset_or_empty)
+                                append_str(&buf, &len, &capacity, use);
+                            /* if unset/empty: expand to nothing */
+                        } else if (op2 == '?') {
+                            if (unset_or_empty) {
+                                fprintf(stderr, "zesh: %s: %s\n", var_name,
+                                        *use ? use : "parameter null or not set");
+                                free(expanded_word);
+                                free(buf);
+                                g_expand_error = 1;
+                                return NULL;
+                            } else {
+                                append_str(&buf, &len, &capacity, cur);
+                            }
+                        }
+                        free(expanded_word);
+                        continue;
+                    }
+                    /* colon but not a modifier — treat as plain ${var:} */
+                    if (colon && *p == '}') {
+                        p++;
+                        const char *v = var_get(var_name);
+                        if (v) append_str(&buf, &len, &capacity, v);
+                        continue;
+                    }
+                    /* restore p if we consumed ':' but no modifier */
+                    if (colon) p--;
                 }
 
                 /* array index: ${arr[N]} ${arr[@]} ${arr[*]} */
@@ -1061,12 +1600,10 @@ char *expand_word(const char *word, int last_exit_status) {
 
                     if (get_length) {
                         if (strcmp(idx_buf, "@") == 0 || strcmp(idx_buf, "*") == 0) {
-                            /* ${#arr[@]} — element count */
                             char nbuf[16];
                             snprintf(nbuf, sizeof(nbuf), "%d", arr_len(var_name));
                             append_str(&buf, &len, &capacity, nbuf);
                         } else {
-                            /* ${#arr[0]} — length of single element */
                             int idx = atoi(idx_buf);
                             const char *v = arr_get(var_name, idx);
                             char nbuf[16];
@@ -1082,12 +1619,12 @@ char *expand_word(const char *word, int last_exit_status) {
                             if (ai > 0) append_str(&buf, &len, &capacity, " ");
                             append_str(&buf, &len, &capacity, v);
                         }
-                               } else {
-                                   int idx = atoi(idx_buf);
-                                   const char *v = arr_get(var_name, idx);
-                                   if (!v) v = "";
-                                   append_str(&buf, &len, &capacity, v);
-                               }
+                    } else {
+                        int idx = atoi(idx_buf);
+                        const char *v = arr_get(var_name, idx);
+                        if (!v) v = "";
+                        append_str(&buf, &len, &capacity, v);
+                    }
                     continue;
                 }
 
@@ -1098,6 +1635,7 @@ char *expand_word(const char *word, int last_exit_status) {
                         const char *v = var_get(var_name);
                         char nbuf[16];
                         snprintf(nbuf, sizeof(nbuf), "%zu", v ? strlen(v) : (size_t)0);
+                        append_str(&buf, &len, &capacity, nbuf);
                     } else {
                         const char *var_value = var_get(var_name);
                         if (!var_value) var_value = "";
@@ -1106,7 +1644,7 @@ char *expand_word(const char *word, int last_exit_status) {
                     continue;
                 }
                 /* malformed — treat literally */
-                p = var_start - 1;
+                p = var_start - (get_length ? 1 : 0) - 1;
             }
             
             // Handle "$VAR" - unbracketed variable

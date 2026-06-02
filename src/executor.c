@@ -2,6 +2,7 @@
 // Created by mete on 23.04.2026.
 //
 
+#define _GNU_SOURCE
 #include <errno.h>
 #include <unistd.h>
 #include <sys/wait.h>
@@ -11,8 +12,8 @@
 #include <string.h>
 #include <termios.h>
 #include <fnmatch.h>
-#include <errno.h>
-#include <unistd.h>
+#include <signal.h>
+#include <time.h>
 #include "../include/jobs.h"
 #include "../include/shell.h"
 
@@ -28,11 +29,15 @@ LoopControl g_loop_control = LOOP_NORMAL;
 static int g_in_procsubst = 0;
 
 static int execute_if(IfNode *node);
+static int execute_select(SelectNode *node);
+static int execute_time_node(TimeNode *node);
+static int execute_coproc(CoprocNode *node);
 static int execute_while(WhileNode *node);
 static int execute_for(ForNode *node);
 static int execute_list_expanded(CmdList *list);
 static int execute_case(CaseNode *node);
 static int execute_pipeline_expanded(Pipeline *p);
+static int execute_subshell(SubshellNode *node);
 
 static int execute_pipeline_expanded(Pipeline *p) {
     if (!p) return 1;
@@ -47,6 +52,11 @@ static int execute_pipeline_expanded(Pipeline *p) {
             char name[64] = {0};
             strncpy(name, arg, eq - arg);
             char *expanded = expand_word(eq + 1, last_exit_status);
+            if (g_expand_error) {
+                if (expanded) free(expanded);
+                g_expand_error = 0;
+                return 1;
+            }
             local_var_set(name, expanded ? expanded : eq + 1);
             if (expanded) free(expanded);
             last_exit_status = 0;
@@ -84,12 +94,50 @@ static int execute_pipeline_expanded(Pipeline *p) {
         for (int ai = 0; ai < src->argc; ai++) {
             if (!src->argv[ai]) { dst->argv[ai] = NULL; continue; }
             char *ex = expand_word(src->argv[ai], last_exit_status);
+            if (g_expand_error) {
+                /* free already-allocated args */
+                for (int k = 0; k < ai; k++) free(dst->argv[k]);
+                /* free remaining commands */
+                for (int k = 0; k < ci; k++) {
+                    for (int ak = 0; ak < tmp.commands[k].argc; ak++)
+                        free(tmp.commands[k].argv[ak]);
+                    free(tmp.commands[k].argv);
+                    free(tmp.commands[k].infile);
+                    free(tmp.commands[k].outfile);
+                }
+                free(dst->argv);
+                free(tmp.commands);
+                return 1;
+            }
             dst->argv[ai] = ex ? ex : strdup(src->argv[ai]);
         }
         dst->argv[src->argc] = NULL;
+        if (g_expand_error) {
+            for (int _ci = 0; _ci <= ci; _ci++) {
+                for (int _ai = 0; _ai < tmp.commands[_ci].argc; _ai++)
+                    free(tmp.commands[_ci].argv[_ai]);
+                free(tmp.commands[_ci].argv);
+                free(tmp.commands[_ci].infile);
+                free(tmp.commands[_ci].outfile);
+            }
+            free(tmp.commands);
+            return 1;
+        }
 
         dst->infile  = src->infile  ? expand_word(src->infile,  last_exit_status) : NULL;
         dst->outfile = src->outfile ? expand_word(src->outfile, last_exit_status) : NULL;
+
+        if (g_expand_error) {
+            for (int _ci = 0; _ci < ci; _ci++) {
+                for (int _ai = 0; _ai < tmp.commands[_ci].argc; _ai++)
+                    free(tmp.commands[_ci].argv[_ai]);
+                free(tmp.commands[_ci].argv);
+                free(tmp.commands[_ci].infile);
+                free(tmp.commands[_ci].outfile);
+            }
+            free(tmp.commands);
+            return 1;
+        }
     }
 
     #define TMP_FREE() do { \
@@ -115,11 +163,23 @@ static int execute_pipeline_expanded(Pipeline *p) {
 
     CmdList *fbody = func_get_body(tmp.commands[0].argv[0]);
     if (fbody) {
+        char saved_funcname[256];
+        strncpy(saved_funcname, g_current_funcname, sizeof(saved_funcname)-1);
+        saved_funcname[sizeof(saved_funcname)-1] = '\0';
+        strncpy(g_current_funcname, tmp.commands[0].argv[0],
+                sizeof(g_current_funcname)-1);
+        g_current_funcname[sizeof(g_current_funcname)-1] = '\0';
+
+        scope_push();
         positional_set(tmp.commands[0].argv + 1,
                        tmp.commands[0].argc - 1);
         status = execute_list_expanded(fbody);
         positional_clear();
         g_returning = 0;
+        scope_pop();
+
+        strncpy(g_current_funcname, saved_funcname, sizeof(g_current_funcname)-1);
+
         if (g_opt_errexit && status != 0 &&
       strcmp(tmp.commands[0].argv[0], "set")  != 0 &&
       strcmp(tmp.commands[0].argv[0], "trap") != 0) {
@@ -219,6 +279,18 @@ static int execute_list_expanded(CmdList *list) {
             case NODE_FOR:
                 last_status = execute_for(node->for_node);
                 break;
+            case NODE_SELECT:
+                last_status = execute_select(node->select_node);
+                break;
+            case NODE_TIME:
+                last_status = execute_time_node(node->time_node);
+                break;
+            case NODE_COPROC:
+                last_status = execute_coproc(node->coproc_node);
+                break;
+            case NODE_SUBSHELL:
+                last_status = execute_subshell(node->subshell_node);
+                break;
             case NODE_PIPELINE:
             default:
                 if (node->pipeline)
@@ -226,6 +298,7 @@ static int execute_list_expanded(CmdList *list) {
                 break;
         }
 
+        if (node->negate) last_status = (last_status == 0) ? 1 : 0;
         last_exit_status = last_status;
         if (g_loop_control != LOOP_NORMAL) return last_status;
         if (g_returning) return g_return_value;
@@ -239,7 +312,78 @@ static int execute_list_expanded(CmdList *list) {
 
 static int execute_if(IfNode *node) {
     if (!node) return 1;
-
+    /* NULL condition = group command { ... }, always execute then_body */
+    if (!node->condition) {
+        /* group command { ... } — apply stored redirections */
+        int saved_fds[MAX_FD_REDIRS + 2];
+        int nsaved = 0;
+        int saved_stdout = -1, saved_stdin = -1;
+        /* outfile redirect */
+        if (node->group_outfile) {
+            int flags = O_WRONLY|O_CREAT|
+                        (node->group_append ? O_APPEND : O_TRUNC);
+            int fd = open(node->group_outfile, flags, 0644);
+            if (fd >= 0) {
+                saved_stdout = dup(STDOUT_FILENO);
+                dup2(fd, STDOUT_FILENO);
+                close(fd);
+            }
+        }
+        if (node->group_infile) {
+            int fd = open(node->group_infile, O_RDONLY);
+            if (fd >= 0) {
+                saved_stdin = dup(STDIN_FILENO);
+                dup2(fd, STDIN_FILENO);
+                close(fd);
+            }
+        }
+        /* fd redirections (e.g. 2>/tmp/file stored as src_fd=2) */
+        for (int ri = 0; ri < node->group_nfd_redirs; ri++) {
+            FdRedir *r = &node->group_fd_redirs[ri];
+            int src = r->src_fd >= 0 ? r->src_fd : STDOUT_FILENO;
+            saved_fds[nsaved++] = dup(src);
+            if (r->dst_fd == -1) {
+                close(src);
+            } else if (r->file) {
+                char *ef = expand_word(r->file, last_exit_status);
+                const char *ts = ef ? ef : r->file;
+                if (strcmp(ts, "-") == 0) {
+                    close(src);
+                } else {
+                    int flags = r->is_input ? O_RDONLY :
+                        (O_WRONLY|O_CREAT|(r->append?O_APPEND:O_TRUNC));
+                    int fd = open(ts, flags, 0644);
+                    if (fd >= 0) { dup2(fd, src); close(fd); }
+                }
+                free(ef);
+            } else if (r->dst_fd >= 0) {
+                dup2(r->dst_fd, src);
+            }
+        }
+        int status = 0;
+        if (node->then_body)
+            status = execute_list_expanded(node->then_body);
+        /* restore redirections */
+        fflush(stdout); fflush(stderr);
+        for (int ri = node->group_nfd_redirs - 1; ri >= 0; ri--) {
+            if (saved_fds[ri] >= 0) {
+                FdRedir *r = &node->group_fd_redirs[ri];
+                int src = r->src_fd >= 0 ? r->src_fd : STDOUT_FILENO;
+                dup2(saved_fds[ri], src);
+                close(saved_fds[ri]);
+            }
+        }
+        if (saved_stdout >= 0) {
+            fflush(stdout);
+            dup2(saved_stdout, STDOUT_FILENO);
+            close(saved_stdout);
+        }
+        if (saved_stdin >= 0) {
+            dup2(saved_stdin, STDIN_FILENO);
+            close(saved_stdin);
+        }
+        return status;
+    }
     /* evaluate condition */
     int cond = execute_list_expanded(node->condition);
 
@@ -308,6 +452,144 @@ static int execute_while(WhileNode *node) {
             g_loop_control = LOOP_NORMAL; continue;
         }
     }
+    return status;
+}
+
+static int execute_select(SelectNode *node) {
+    if (!node) return 1;
+
+    /* expand word list */
+    char *words[256];
+    int   nwords = 0;
+    for (int i = 0; i < node->nwords && i < 256; i++) {
+        char *w = expand_word(node->words[i], last_exit_status);
+        words[nwords++] = w ? w : strdup(node->words[i]);
+    }
+
+    int status = 0;
+    while (1) {
+        if (g_sigint_received || g_interrupt_loop) {
+            g_sigint_received = 0; g_interrupt_loop = 0;
+            for (int i = 0; i < nwords; i++) free(words[i]);
+            return 130;
+        }
+        /* print numbered menu to stderr */
+        for (int i = 0; i < nwords; i++)
+            fprintf(stderr, "%d) %s\n", i + 1, words[i]);
+
+        const char *ps3 = var_get("PS3");
+        if (!ps3 || !ps3[0]) ps3 = "#? ";
+        fprintf(stderr, "%s", ps3);
+        fflush(stderr);
+
+        char line[256] = {0};
+        if (!fgets(line, sizeof(line), stdin)) {
+            write(STDOUT_FILENO, "\n", 1);
+            break;
+        }
+        line[strcspn(line, "\n")] = '\0';
+
+        int sel = atoi(line);
+        if (sel >= 1 && sel <= nwords) {
+            local_var_set(node->var, words[sel - 1]);
+            setenv(node->var, words[sel - 1], 1);
+        } else {
+            local_var_set(node->var, "");
+            setenv(node->var, "", 1);
+        }
+        /* set REPLY */
+        local_var_set("REPLY", line);
+        setenv("REPLY", line, 1);
+
+        if (node->body)
+            status = execute_list_expanded(node->body);
+
+        if (g_loop_control == LOOP_BREAK) { g_loop_control = LOOP_NORMAL; break; }
+        if (g_loop_control == LOOP_CONTINUE) { g_loop_control = LOOP_NORMAL; continue; }
+    }
+    for (int i = 0; i < nwords; i++) free(words[i]);
+    return status;
+}
+
+static int execute_coproc(CoprocNode *node) {
+    if (!node || !node->pipeline) return 1;
+
+    /* two pipes: shell→coproc (stdin of coproc) and coproc→shell (stdout of coproc) */
+    int to_coproc[2];    /* shell writes [1], coproc reads [0] */
+    int from_coproc[2];  /* coproc writes [1], shell reads [0] */
+
+    if (pipe(to_coproc) < 0 || pipe(from_coproc) < 0) {
+        perror("coproc: pipe");
+        return 1;
+    }
+
+    fflush(NULL);
+    pid_t pid = fork();
+    if (pid < 0) { perror("coproc: fork"); return 1; }
+
+    if (pid == 0) {
+        /* child: connect pipes to stdin/stdout */
+        signals_child();
+        dup2(to_coproc[0],   STDIN_FILENO);
+        dup2(from_coproc[1], STDOUT_FILENO);
+        close(to_coproc[0]);  close(to_coproc[1]);
+        close(from_coproc[0]); close(from_coproc[1]);
+        /* run the pipeline */
+        execute(node->pipeline);
+        _exit(0);
+    }
+
+    /* parent: close child-facing ends */
+    close(to_coproc[0]);
+    close(from_coproc[1]);
+
+    /* store fds in array: NAME[0]=read_fd, NAME[1]=write_fd */
+    const char *cp_name = node->name ? node->name : "COPROC";
+    char arr_name[256];
+
+    /* COPROC[0] = from_coproc[0] (read from coproc), COPROC[1] = to_coproc[1] (write to coproc) */
+    char buf[16];
+    snprintf(buf, sizeof(buf), "%d", from_coproc[0]);
+    snprintf(arr_name, sizeof(arr_name), "%s", cp_name);
+    arr_set(arr_name, 0, buf);
+
+    snprintf(buf, sizeof(buf), "%d", to_coproc[1]);
+    arr_set(arr_name, 1, buf);
+
+    /* also set COPROC_PID */
+    char pidbuf[32];
+    snprintf(pidbuf, sizeof(pidbuf), "%d", (int)pid);
+    local_var_set("COPROC_PID", pidbuf);
+    setenv("COPROC_PID", pidbuf, 1);
+
+    /* add to background jobs */
+    char cmd_str[256] = {0};
+    if (node->pipeline && node->pipeline->ncommands > 0 &&
+        node->pipeline->commands[0].argv &&
+        node->pipeline->commands[0].argv[0]) {
+        strncpy(cmd_str, node->pipeline->commands[0].argv[0], sizeof(cmd_str)-1);
+    }
+    int job_id = job_add(pid, cmd_str);
+    /* use write() to bypass stdio buffering — printf could flush buffered
+       data into a later fd-redirected stdout */
+    char notif[64];
+    int nlen = snprintf(notif, sizeof(notif), "[%d] %d\n", job_id, (int)pid);
+    write(STDOUT_FILENO, notif, nlen);
+
+    return 0;
+}
+
+static int execute_time_node(TimeNode *node) {
+    if (!node || !node->pipeline) return 0;
+    struct timespec start, end;
+    clock_gettime(CLOCK_MONOTONIC, &start);
+    int status = execute(node->pipeline);
+    clock_gettime(CLOCK_MONOTONIC, &end);
+    double real = (end.tv_sec - start.tv_sec) +
+                  (end.tv_nsec - start.tv_nsec) / 1e9;
+    int rm = (int)(real / 60);
+    double rs = real - rm * 60;
+    fprintf(stderr, "\nreal\t%dm%.3fs\n", rm, rs);
     return status;
 }
 
@@ -412,6 +694,25 @@ int execute_list_in_subshell(CmdList *list) {
     return last_status;
 }
 
+/* ---- subshell execution ---- */
+static int execute_subshell(SubshellNode *node) {
+    if (!node || !node->body) return 0;
+    fflush(NULL);
+    pid_t pid = fork();
+    if (pid < 0) { perror("subshell"); return 1; }
+    if (pid == 0) {
+        signals_child();
+        int status = execute_list_expanded(node->body);
+        fflush(stdout);
+        _exit(status);
+    }
+    int status = 0;
+    waitpid(pid, &status, 0);
+    if (WIFEXITED(status))   return WEXITSTATUS(status);
+    if (WIFSIGNALED(status)) return 128 + WTERMSIG(status);
+    return 1;
+}
+
 /* ------------------------------------------------------------------ */
 /*                         execute_list                               */
 /* ------------------------------------------------------------------ */
@@ -453,6 +754,18 @@ int execute_list(CmdList *list) {
         case NODE_FOR:
             last_status = execute_for(node->for_node);
             break;
+        case NODE_SELECT:
+            last_status = execute_select(node->select_node);
+            break;
+        case NODE_TIME:
+            last_status = execute_time_node(node->time_node);
+            break;
+        case NODE_COPROC:
+            last_status = execute_coproc(node->coproc_node);
+            break;
+        case NODE_SUBSHELL:
+            last_status = execute_subshell(node->subshell_node);
+            break;
 
 case NODE_PIPELINE:
 default: {
@@ -474,6 +787,75 @@ default: {
     if (p->ncommands == 0 || !p->commands[0].argv ||
         !p->commands[0].argv[0]) { last_status = 0; break; }
 
+    /* exec builtin — handled before normal builtin path to avoid fd save/restore */
+    if (p->ncommands == 1 &&
+        strcmp(p->commands[0].argv[0], "exec") == 0) {
+        Command *ec = &p->commands[0];
+        /* expand argv */
+        char *eargv[MAX_ARGS + 1];
+        for (int ai = 0; ai < ec->argc && ai < MAX_ARGS; ai++) {
+            char *ex = ec->argv[ai] ? expand_word(ec->argv[ai], last_exit_status) : NULL;
+            eargv[ai] = ex ? ex : (ec->argv[ai] ? strdup(ec->argv[ai]) : NULL);
+        }
+        eargv[ec->argc] = NULL;
+        char *ein  = ec->infile  ? expand_word(ec->infile,  last_exit_status) : NULL;
+        char *eout = ec->outfile ? expand_word(ec->outfile, last_exit_status) : NULL;
+
+        /* apply outfile/infile redirections permanently */
+        if (eout) {
+            int flags = O_WRONLY | O_CREAT | (ec->append ? O_APPEND : O_TRUNC);
+            int fd = open(eout, flags, 0644);
+            if (fd >= 0) { dup2(fd, STDOUT_FILENO); close(fd); }
+            free(eout);
+        }
+        if (ein) {
+            int fd = open(ein, O_RDONLY);
+            if (fd >= 0) { dup2(fd, STDIN_FILENO); close(fd); }
+            free(ein);
+        }
+
+        /* apply fd_redirs permanently */
+        for (int ri = 0; ri < ec->nfd_redirs; ri++) {
+            FdRedir *r = &ec->fd_redirs[ri];
+            int src = r->src_fd >= 0 ? r->src_fd : (r->is_input ? STDIN_FILENO : STDOUT_FILENO);
+            if (r->dst_fd == -1) {
+                close(src);
+            } else if (r->dst_fd == -2 && r->file) {
+                char *ef = expand_word(r->file, last_exit_status);
+                const char *ts = ef ? ef : r->file;
+                char *ep = NULL; long fdn = strtol(ts, &ep, 10);
+                if (ep && *ep == '\0' && fdn >= 0) dup2((int)fdn, src);
+                else if (strcmp(ts, "-") == 0) close(src);
+                else {
+                    int flags = r->is_input ? O_RDONLY : (O_WRONLY|O_CREAT|(r->append?O_APPEND:O_TRUNC));
+                    int fd = open(ts, flags, 0644);
+                    if (fd >= 0) { dup2(fd, src); close(fd); }
+                }
+                free(ef);
+            } else if (r->dst_fd >= 0) {
+                dup2(r->dst_fd, src);
+            } else if (r->file) {
+                char *ef = expand_word(r->file, last_exit_status);
+                const char *ts = ef ? ef : r->file;
+                int flags = r->is_input ? O_RDONLY : (O_WRONLY|O_CREAT|(r->append?O_APPEND:O_TRUNC));
+                int fd = open(ts, flags, 0644);
+                if (fd >= 0) { dup2(fd, src); close(fd); }
+                free(ef);
+            }
+        }
+
+        /* process replacement: exec cmd [args] */
+        if (ec->argc >= 2 && eargv[1]) {
+            execvp(eargv[1], eargv + 1);
+            perror(eargv[1]);
+            for (int ai = 0; ai < ec->argc; ai++) free(eargv[ai]);
+            _exit(127);
+        }
+        for (int ai = 0; ai < ec->argc; ai++) free(eargv[ai]);
+        last_status = 0;
+        break;
+    }
+
     /* inline assignment */
     if (p->ncommands == 1 && p->commands[0].argc == 1) {
         char *arg = p->commands[0].argv[0];
@@ -482,6 +864,13 @@ default: {
             char name[64] = {0};
             strncpy(name, arg, eq - arg);
             char *expanded = expand_word(eq + 1, last_exit_status);
+            if (g_expand_error) {
+                free(expanded);
+                g_expand_error = 0;
+                last_status = 1;
+                last_exit_status = 1;
+                break;
+            }
             local_var_set(name, expanded ? expanded : eq + 1);
             if (expanded) free(expanded);
             last_status = 0;
@@ -492,12 +881,23 @@ default: {
 
     CmdList *fbody = func_get_body(p->commands[0].argv[0]);
     if (fbody) {
+        char saved_funcname[256];
+        strncpy(saved_funcname, g_current_funcname, sizeof(saved_funcname)-1);
+        saved_funcname[sizeof(saved_funcname)-1] = '\0';
+        strncpy(g_current_funcname, p->commands[0].argv[0],
+                sizeof(g_current_funcname)-1);
+        g_current_funcname[sizeof(g_current_funcname)-1] = '\0';
+
+        scope_push();
         positional_set(p->commands[0].argv + 1,
                        p->commands[0].argc - 1);
         last_status = execute_list_expanded(fbody);
         positional_clear();
         g_returning = 0;
         last_exit_status = last_status;
+        scope_pop();
+
+        strncpy(g_current_funcname, saved_funcname, sizeof(g_current_funcname)-1);
         break;
     }
 
@@ -512,6 +912,12 @@ default: {
             char *ex = expand_word(expanded_cmd.argv[ai], last_exit_status);
             expanded_argv[ai] = ex ? ex : expanded_cmd.argv[ai];
         }
+        if (g_expand_error) {
+            g_expand_error = 0;
+            last_status = 1;
+            last_exit_status = 1;
+            break;
+        }
         expanded_argv[expanded_cmd.argc] = NULL;
         expanded_cmd.argv = expanded_argv;
         expanded_cmd.infile  = expanded_cmd.infile
@@ -522,6 +928,9 @@ default: {
             : NULL;
         Command *bcmd = &expanded_cmd;
         int saved_stdout = -1, saved_stdin = -1;
+        /* save/restore for fd_redirs */
+        int saved_fds[MAX_FD_REDIRS];
+        for (int ri = 0; ri < bcmd->nfd_redirs; ri++) saved_fds[ri] = -1;
 
         if (bcmd->outfile) {
             int flags = O_WRONLY | O_CREAT |
@@ -541,7 +950,44 @@ default: {
                 close(fd);
             }
         }
+        /* apply fd_redirs */
+        for (int ri = 0; ri < bcmd->nfd_redirs; ri++) {
+            FdRedir *r = &bcmd->fd_redirs[ri];
+            int src = r->src_fd >= 0 ? r->src_fd : (r->is_input ? STDIN_FILENO : STDOUT_FILENO);
+            saved_fds[ri] = dup(src);
+            if (r->dst_fd == -1) {
+                close(src);
+            } else if (r->dst_fd == -2 && r->file) {
+                char *etgt = expand_word(r->file, last_exit_status);
+                const char *ts = etgt ? etgt : r->file;
+                char *ep2 = NULL;
+                long fdn = strtol(ts, &ep2, 10);
+                if (ep2 && *ep2 == '\0' && fdn >= 0) dup2((int)fdn, src);
+                else if (strcmp(ts, "-") == 0) close(src);
+                else { int f2 = open(ts, r->is_input ? O_RDONLY : (O_WRONLY|O_CREAT|O_TRUNC), 0644); if (f2>=0){dup2(f2,src);close(f2);} }
+                free(etgt);
+            } else if (r->dst_fd >= 0) {
+                dup2(r->dst_fd, src);
+            } else if (r->file) {
+                int flags2 = r->is_input ? O_RDONLY :
+                             (O_WRONLY | O_CREAT | (r->append ? O_APPEND : O_TRUNC));
+                int fd2 = open(r->file, flags2, 0644);
+                if (fd2 >= 0) { dup2(fd2, src); close(fd2); }
+            }
+        }
+
         last_status = run_builtin(bcmd);
+
+        /* restore fd_redirs */
+        fflush(stdout);  /* flush before any stdout fd restore */
+        for (int ri = bcmd->nfd_redirs - 1; ri >= 0; ri--) {
+            if (saved_fds[ri] >= 0) {
+                FdRedir *r = &bcmd->fd_redirs[ri];
+                int src = r->src_fd >= 0 ? r->src_fd : (r->is_input ? STDIN_FILENO : STDOUT_FILENO);
+                dup2(saved_fds[ri], src);
+                close(saved_fds[ri]);
+            }
+        }
 
         if (saved_stdout >= 0) {
             fflush(stdout);
@@ -567,6 +1013,7 @@ default: {
 }
         } /* switch */
 
+        if (node->negate) last_status = (last_status == 0) ? 1 : 0;
         last_exit_status = last_status;
         if (g_loop_control != LOOP_NORMAL) return last_status;
         if (g_returning) return g_return_value;
@@ -624,6 +1071,7 @@ int execute(Pipeline *p) {
             free(expanded_content);
         }
 
+        fflush(NULL);
         pid_t pid = fork();
         if (pid == 0) {
             signals_child();
@@ -654,6 +1102,41 @@ int execute(Pipeline *p) {
                 close(fd);
             }
 
+            /* fd redirections */
+            for (int ri = 0; ri < cmd->nfd_redirs; ri++) {
+                FdRedir *r = &cmd->fd_redirs[ri];
+                int src = r->src_fd >= 0 ? r->src_fd : (r->is_input ? STDIN_FILENO : STDOUT_FILENO);
+                if (r->dst_fd == -1) {
+                    close(src);
+                } else if (r->dst_fd == -2 && r->file) {
+                    /* expand and use as fd number or file */
+                    char *expanded_tgt = expand_word(r->file, last_exit_status);
+                    const char *tgt_str = expanded_tgt ? expanded_tgt : r->file;
+                    /* check if it's a pure integer */
+                    char *endp = NULL;
+                    long fd_num2 = strtol(tgt_str, &endp, 10);
+                    if (endp && *endp == '\0' && fd_num2 >= 0) {
+                        dup2((int)fd_num2, src);
+                    } else if (strcmp(tgt_str, "-") == 0) {
+                        close(src);
+                    } else {
+                        /* treat as filename */
+                        int flags = r->is_input ? O_RDONLY :
+                                    (O_WRONLY | O_CREAT | O_TRUNC);
+                        int fd2 = open(tgt_str, flags, 0644);
+                        if (fd2 >= 0) { dup2(fd2, src); close(fd2); }
+                    }
+                    free(expanded_tgt);
+                } else if (r->dst_fd >= 0) {
+                    dup2(r->dst_fd, src);
+                } else if (r->file) {
+                    int flags = r->is_input ? O_RDONLY :
+                                (O_WRONLY | O_CREAT | (r->append ? O_APPEND : O_TRUNC));
+                    int fd2 = open(r->file, flags, 0644);
+                    if (fd2 >= 0) { dup2(fd2, src); close(fd2); }
+                }
+            }
+
             // Execute the command
             execvp(cmd->argv[0], cmd->argv);
             perror(cmd->argv[0]);
@@ -673,7 +1156,10 @@ int execute(Pipeline *p) {
                         sizeof(cmd_str)-strlen(cmd_str)-1);
             }
             int job_id = job_add(pid, cmd_str);
-            printf("[%d] %d\n", job_id, pid);
+            g_last_bg_pid = pid;
+            char bg_notif[64];
+            int bg_nlen = snprintf(bg_notif, sizeof(bg_notif), "[%d] %d\n", job_id, pid);
+            write(STDOUT_FILENO, bg_notif, bg_nlen);
             return 0;
         }
 
@@ -835,6 +1321,7 @@ int execute(Pipeline *p) {
         // Fork children for each command
         for (int i = 0; i < p->ncommands; i++) {
             Command *cmd = &p->commands[i];
+            fflush(NULL);
             pid_t pid = fork();
             
             if (pid == 0) {
@@ -951,7 +1438,10 @@ int execute(Pipeline *p) {
             }
             
             int job_id = job_add(pgid, cmd_str);
-            printf("[%d] %d\n", job_id, pgid);
+            g_last_bg_pid = pgid;
+            char bgp_notif[64];
+            int bgp_nlen = snprintf(bgp_notif, sizeof(bgp_notif), "[%d] %d\n", job_id, pgid);
+            write(STDOUT_FILENO, bgp_notif, bgp_nlen);
             free(pids);
             return 0;
         }

@@ -2,11 +2,11 @@
 // Created by mete on 27.04.2026.
 //
 
+#define _GNU_SOURCE
 #include "../include/completions.h"
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
-//#define _POSIX_C_SOURCE 200809L   /* popen, pclose */
 
 extern char **cd_frecency_list(const char *query, int limit, int *count_out);
 
