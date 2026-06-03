@@ -1,6 +1,10 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 // Copyright (C) 2026 Ömer Mete Kaya
 
+/* GLOB_TILDE is a GNU extension; required when building with
+ * -D_POSIX_C_SOURCE which otherwise disables it on glibc. Harmless on
+ * macOS/FreeBSD where GLOB_TILDE is available unconditionally. */
+#define _GNU_SOURCE
 #include <sys/ioctl.h>
 #include <termios.h>
 #include <unistd.h>
