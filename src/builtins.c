@@ -911,7 +911,10 @@ int run_builtin(Command *cmd) {
             /* install / restore signal handler */
             struct sigaction sa;
             sigemptyset(&sa.sa_mask);
-            sa.sa_flags = SA_RESTART;
+            sa.sa_flags = 0;
+            #ifdef SA_RESTART
+            sa.sa_flags |= SA_RESTART;
+            #endif
 
             if (reset) {
                 sa.sa_handler = SIG_DFL;
@@ -1666,6 +1669,7 @@ int run_builtin(Command *cmd) {
             for (int i = 0; i < g_hash_count; i++) {
                 if (strcmp(g_hash_table[i].name, del_name) == 0) {
                     g_hash_table[i] = g_hash_table[--g_hash_count];
+                    memset(&g_hash_table[g_hash_count], 0, sizeof(HashEntry));
                     break;
                 }
             }

@@ -191,7 +191,7 @@ fi
 hd "6. TILDE EXPANSION"
 
 RH=$(echo ~root)
-if [ "$RH" = "/root" ]; then
+if [ "$RH" = "/root" ] || [ "$RH" = "/var/root" ]; then
     echo "[PASS] tilde root: $RH"; PASS=$((PASS+1))
 else
     echo "[FAIL] tilde root -- got: $RH"; FAIL=$((FAIL+1))
@@ -378,9 +378,11 @@ else
 fi
 rm -f /tmp/zesh_fd5.txt
 
-exec 4</etc/hostname
+echo "testcontent" > /tmp/zesh_fd4_test.txt
+exec 4</tmp/zesh_fd4_test.txt
 read -u 4 FD4LINE
 exec 4<&-
+rm -f /tmp/zesh_fd4_test.txt
 if [ -n "$FD4LINE" ]; then
     echo "[PASS] exec 4< read: $FD4LINE"; PASS=$((PASS+1))
 else

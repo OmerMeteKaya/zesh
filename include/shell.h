@@ -6,6 +6,11 @@
 
 #include <signal.h>
 #include <sys/types.h>
+#include <glob.h>
+
+#ifndef GLOB_TILDE
+#define GLOB_TILDE 0
+#endif
 #define MAX_ARGS    64
 #define MAX_TOKENS  256
 #ifdef MAX_INPUT

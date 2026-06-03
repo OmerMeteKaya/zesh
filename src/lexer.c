@@ -491,7 +491,7 @@ Token *lex(const char *input, int *ntokens) {
             }
         }
 
-        word_parse:
+        word_parse: ;
         // Words
         const char *start = p;
         /* handle $(...) as single unit — existing logic */
