@@ -464,13 +464,14 @@ else
 fi
 
 hash -d ls 2>/dev/null
-hash > /tmp/zesh_hash.txt 2>/dev/null
-if ! grep -qE "^ls|/ls" /tmp/zesh_hash.txt 2>/dev/null; then
+hash > /tmp/zesh_hash_after_d.txt 2>/dev/null
+HOUT2=$(cat /tmp/zesh_hash_after_d.txt)
+rm -f /tmp/zesh_hash_after_d.txt
+if [ -z "$HOUT2" ] || ! echo "$HOUT2" | grep -qE "/ls"; then
     echo "[PASS] hash -d ls removes"; PASS=$((PASS+1))
 else
     echo "[FAIL] hash -d -- ls still there"; FAIL=$((FAIL+1))
 fi
-rm -f /tmp/zesh_hash.txt
 
 hash -r 2>/dev/null
 HOUT3=$(hash 2>/dev/null)
@@ -627,7 +628,7 @@ hd "25. SET -E BEHAVIOR"
 if [ $? -ne 0 ]; then
     echo "[PASS] set -e exits on false"; PASS=$((PASS+1))
 else
-    sk "set -e -- subshell exit code not propagated"
+    echo "[FAIL] set -e -- subshell exit code not propagated"; FAIL=$((FAIL+1))
 fi
 rm -f /tmp/zesh_sete.txt
 

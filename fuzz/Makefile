@@ -1,8 +1,8 @@
-# Fuzzing harness for Zesh — lexer, parser, expand_word.
+# Fuzzing harness for Zesh — lexer, parser, expand_word, script.
 #
 #   make            build the AFL++-instrumented targets
 #   make asan       build ASan/UBSan reproduction targets (no AFL++ needed)
-#   make fuzz-lexer | fuzz-parser | fuzz-expand   run an AFL++ session
+#   make fuzz-lexer | fuzz-parser | fuzz-expand | fuzz-script   run an AFL++ session
 #   make corpus     (re)generate the seed corpus
 #   make clean      remove build artifacts
 #
@@ -31,12 +31,12 @@ LDLIBS  := -lsqlite3 $(DL)
 # plus fuzz_stubs.c which supplies the few symbols main.c would otherwise own.
 SRC := $(filter-out ../src/main.c,$(wildcard ../src/*.c)) fuzz_stubs.c
 
-TARGETS      := fuzz_lexer fuzz_parser fuzz_expand
-ASAN_TARGETS := fuzz_lexer_asan fuzz_parser_asan fuzz_expand_asan
+TARGETS      := fuzz_lexer fuzz_parser fuzz_expand fuzz_script
+ASAN_TARGETS := fuzz_lexer_asan fuzz_parser_asan fuzz_expand_asan fuzz_script_asan
 
 .PHONY: all asan corpus clean \
-        fuzz-lexer fuzz-parser fuzz-expand \
-        fuzz-lexer-bin fuzz-parser-bin fuzz-expand-bin
+        fuzz-lexer fuzz-parser fuzz-expand fuzz-script \
+        fuzz-lexer-bin fuzz-parser-bin fuzz-expand-bin fuzz-script-bin
 
 all: $(TARGETS)
 
@@ -50,10 +50,14 @@ fuzz_parser: fuzz_parser.c fuzz_common.h $(SRC)
 fuzz_expand: fuzz_expand.c fuzz_common.h $(SRC)
 	$(AFL_CC) $(CFLAGS) fuzz_expand.c $(SRC) -o $@ $(LDLIBS)
 
+fuzz_script: fuzz_script.c fuzz_common.h $(SRC)
+	$(AFL_CC) $(CFLAGS) fuzz_script.c $(SRC) -o $@ $(LDLIBS)
+
 # Aliases used by run_fuzz.sh
 fuzz-lexer-bin:  fuzz_lexer
 fuzz-parser-bin: fuzz_parser
 fuzz-expand-bin: fuzz_expand
+fuzz-script-bin: fuzz_script
 
 # --- ASan/UBSan reproduction targets (no AFL++ required) ------------------
 asan: $(ASAN_TARGETS)
@@ -66,6 +70,9 @@ fuzz_parser_asan: fuzz_parser.c fuzz_common.h $(SRC)
 
 fuzz_expand_asan: fuzz_expand.c fuzz_common.h $(SRC)
 	$(CC) $(CFLAGS) -g -fsanitize=address,undefined fuzz_expand.c $(SRC) -o $@ $(LDLIBS)
+
+fuzz_script_asan: fuzz_script.c fuzz_common.h $(SRC)
+	$(CC) $(CFLAGS) -g -fsanitize=address,undefined fuzz_script.c $(SRC) -o $@ $(LDLIBS)
 
 # --- Running AFL++ ---------------------------------------------------------
 # These run a session directly; run_fuzz.sh wraps them with a time budget.
@@ -80,6 +87,10 @@ fuzz-parser: fuzz_parser
 fuzz-expand: fuzz_expand
 	mkdir -p findings/expand
 	afl-fuzz -i corpus/expand -o findings/expand -t 5000 -m 256 -- ./fuzz_expand @@
+
+fuzz-script: fuzz_script
+	mkdir -p findings/script
+	afl-fuzz -i corpus/script -o findings/script -t 3000 -m 512 -- ./fuzz_script @@
 
 # --- Corpus ----------------------------------------------------------------
 corpus:

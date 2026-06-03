@@ -12,6 +12,9 @@
 #include <string.h>
 #include <stdio.h>
 #include <glob.h>
+#ifndef GLOB_TILDE
+#define GLOB_TILDE 0
+#endif
 #include <dirent.h>
 #include <ctype.h>
 #include "../include/input.h"

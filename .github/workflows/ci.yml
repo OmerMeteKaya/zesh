@@ -194,7 +194,76 @@ jobs:
           STD: ${{ matrix.std }}
 
   # ------------------------------------------------------------------
-  # Job 3 — warnings report (-Wall -Wextra -Wpedantic). Never fails;
+  # Job 3 — Alpine Linux (musl libc).
+  # ------------------------------------------------------------------
+  alpine:
+    name: alpine · gcc · c17
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    container:
+      image: alpine:latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install dependencies
+        run: apk add --no-cache gcc musl-dev sqlite-dev make bash
+
+      - name: Build
+        run: |
+          gcc -Wall -std=c17 -D_POSIX_C_SOURCE=200809L -D_GNU_SOURCE \
+            -Iinclude \
+            src/*.c -o zesh \
+            -lsqlite3 -ldl
+
+      - name: Run parity tests
+        run: |
+          ./zesh test_parite.sh > out.txt 2> err.txt || true
+          cat out.txt
+          head -40 err.txt || true
+          grep -q "0 FAIL" out.txt
+
+      - name: Upload test artifacts
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: logs-alpine-gcc-c17
+          path: |
+            out.txt
+            err.txt
+          if-no-files-found: ignore
+          retention-days: 7
+
+  # ------------------------------------------------------------------
+  # Job 4 — OpenBSD (emulated VM via cross-platform-actions).
+  # ------------------------------------------------------------------
+  openbsd:
+    name: openbsd-7.6 · clang · c17
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Build & test on OpenBSD
+        uses: cross-platform-actions/action@v0.27.0
+        with:
+          operating_system: openbsd
+          version: '7.6'
+          shell: bash
+          run: |
+            set -x
+            sudo pkg_add sqlite3
+            # OpenBSD ships clang; dlopen is in libc (no -ldl needed).
+            clang -Wall -std=c17 -D_POSIX_C_SOURCE=200809L \
+              -Iinclude -I/usr/local/include \
+              src/*.c -o zesh \
+              -L/usr/local/lib -lsqlite3
+            ./zesh test_parite.sh > out.txt 2> err.txt || true
+            cat out.txt
+            head -40 err.txt || true
+            grep -q "0 FAIL" out.txt
+
+  # ------------------------------------------------------------------
+  # Job 5 — warnings report (-Wall -Wextra -Wpedantic). Never fails;
   #         it tracks warning debt over time via the run summary.
   # ------------------------------------------------------------------
   warnings-report:
@@ -245,12 +314,12 @@ jobs:
           retention-days: 7
 
   # ------------------------------------------------------------------
-  # Job 4 — overall pass/fail summary.
+  # Job 6 — overall pass/fail summary.
   # ------------------------------------------------------------------
   summary:
     name: CI summary
     runs-on: ubuntu-latest
-    needs: [build-and-test, freebsd]
+    needs: [build-and-test, freebsd, alpine, openbsd]
     if: always()
     steps:
       - name: Report
@@ -258,16 +327,24 @@ jobs:
         run: |
           echo "build-and-test: ${{ needs.build-and-test.result }}"
           echo "freebsd:        ${{ needs.freebsd.result }}"
+          echo "alpine:         ${{ needs.alpine.result }}"
+          echo "openbsd:        ${{ needs.openbsd.result }}"
           {
             echo "## CI summary"
             echo "| Job | Result |"
             echo "|-----|--------|"
             echo "| build-and-test | ${{ needs.build-and-test.result }} |"
             echo "| freebsd | ${{ needs.freebsd.result }} |"
+            echo "| alpine | ${{ needs.alpine.result }} |"
+            echo "| openbsd | ${{ needs.openbsd.result }} |"
           } >> "$GITHUB_STEP_SUMMARY"
-          # FreeBSD is emulated and allowed to be flaky; gate only on the
-          # primary matrix here.
+          # Gate on the primary matrix and Alpine; BSD jobs are emulated
+          # and may be flaky — they appear in the table but don't block.
           if [ "${{ needs.build-and-test.result }}" != "success" ]; then
             echo "::error::build-and-test failed"
+            exit 1
+          fi
+          if [ "${{ needs.alpine.result }}" != "success" ]; then
+            echo "::error::alpine failed"
             exit 1
           fi
