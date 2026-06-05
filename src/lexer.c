@@ -8,6 +8,21 @@
 
 #include "../include/shell.h"
 
+#ifdef USE_RUST_LEXER
+/* Route lex()/tokens_free() through the Rust implementation (lexer.rs). The
+ * full C implementation below is preserved verbatim under #else. */
+#include "../include/zesh_rs.h"
+
+Token *lex(const char *input, int *ntokens) {
+    return lex_rs(input, ntokens);
+}
+
+void tokens_free(Token *toks, int n) {
+    tokens_free_rs(toks, n);
+}
+
+#else /* !USE_RUST_LEXER — original C implementation */
+
 void tokens_free(Token *toks, int n) {
     if (!toks) return;
     for (int i = 0; i < n; i++) {
@@ -589,4 +604,6 @@ Token *lex(const char *input, int *ntokens) {
     *ntokens = count;
     return tokens;
 }
+
+#endif /* USE_RUST_LEXER */
 

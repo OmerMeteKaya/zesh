@@ -218,6 +218,69 @@ pub struct ForNode {
     pub body: *mut CmdList,
 }
 
+// ---- ShellConfig (include/config.h) — read by security.rs (g_config) ----
+// Hand-mirrored with the same field order/sizes; the size assertion below
+// fails the build if it drifts. The C g_config remains the single source of
+// truth (defined in config.c) and is read via `extern`.
+#[repr(C)]
+pub struct ShellConfig {
+    pub prompt_show_time: c_int,
+    pub prompt_show_user: c_int,
+    pub prompt_color_ok: [c_char; 16],
+    pub prompt_color_err: [c_char; 16],
+    pub history_max: c_int,
+    pub history_dedup: c_int,
+    pub security_warn: c_int,
+    pub security_block: c_int,
+    pub security_audit: c_int,
+    pub security_audit_log: [c_char; 256],
+    pub panel_max_rows: c_int,
+    pub panel_max_items: c_int,
+    pub panel_enabled: c_int,
+    pub completion_enabled: c_int,
+    pub suggestion_enabled: c_int,
+    pub highlight_enabled: c_int,
+    pub hl_color_keyword: [c_char; 16],
+    pub hl_color_string: [c_char; 16],
+    pub hl_color_variable: [c_char; 16],
+    pub hl_color_comment: [c_char; 16],
+    pub hl_color_operator: [c_char; 16],
+    pub hl_color_cmd_ok: [c_char; 16],
+    pub hl_color_cmd_err: [c_char; 16],
+    pub hl_color_path: [c_char; 16],
+    pub hl_color_flag: [c_char; 16],
+}
+
+extern "C" {
+    // Defined in src/config.c (always — even under USE_RUST_CONFIG, only the
+    // load/save logic is routed to Rust; the storage stays C-owned). Mutable
+    // because config_load_rs writes into it.
+    pub static mut g_config: ShellConfig;
+
+    // The shell's $? — defined in src/signals.c, read/written across modules.
+    pub static mut last_exit_status: c_int;
+}
+
+/// Current $? value (read through a raw pointer to avoid `static_mut_refs`).
+#[inline]
+pub fn last_exit() -> c_int {
+    // SAFETY: plain `int` read; single-threaded shell, no concurrent writer.
+    unsafe { *core::ptr::addr_of!(last_exit_status) }
+}
+
+/// Raw const pointer to g_config, avoiding `static_mut_refs`.
+/// SAFETY: caller must not hold it across a config_load mutation.
+#[inline]
+pub fn config_ptr() -> *const ShellConfig {
+    core::ptr::addr_of!(g_config)
+}
+
+/// Raw mut pointer to g_config.
+#[inline]
+pub fn config_ptr_mut() -> *mut ShellConfig {
+    core::ptr::addr_of_mut!(g_config)
+}
+
 // ---- compile-time layout assertions (64-bit ABI; CI Rust builds are 64-bit) ----
 // If a struct ever drifts from include/shell.h these stop the build cold.
 #[cfg(target_pointer_width = "64")]
@@ -238,4 +301,5 @@ const _: () = {
     assert!(size_of::<IfNode>() == 704);
     assert!(size_of::<WhileNode>() == 440);
     assert!(size_of::<ForNode>() == 32);
+    assert!(size_of::<ShellConfig>() == 484);
 };

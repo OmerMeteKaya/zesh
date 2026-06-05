@@ -16,6 +16,14 @@ extern void tokens_free(Token *toks, int n);
 extern CmdList *parse_list(Token *toks, int ntokens);
 extern Token *glob_expand_tokens(Token *toks, int *ntokens, int last_exit);
 
+#ifdef USE_RUST_RC
+/* Route ~/.zeshrc loading through Rust (rc.rs). Original C below under #else. */
+#include "../include/zesh_rs.h"
+
+void rc_load(const char *path) { rc_load_rs(path); }
+
+#else /* !USE_RUST_RC — original C implementation */
+
 void rc_load(const char *path) {
     FILE *f = fopen(path, "r");
     if (!f) return; /* file may not exist, return silently */
@@ -89,3 +97,5 @@ void rc_load(const char *path) {
 
     fclose(f);
 }
+
+#endif /* USE_RUST_RC */

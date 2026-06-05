@@ -27,5 +27,10 @@
 pub mod ffi;
 pub mod parser;
 pub mod expand;
+pub mod lexer;
+pub mod alias;
+pub mod security;
+pub mod config;
+pub mod rc;
 
 pub use ffi::*;

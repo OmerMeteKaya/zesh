@@ -35,6 +35,17 @@ ShellConfig g_config = {
     .hl_color_flag     = "yellow",
 };
 
+#ifdef USE_RUST_CONFIG
+/* Route config load/save through Rust (config.rs). g_config itself stays
+ * C-owned (defined above, always). The C parsing below is preserved under
+ * #else. */
+#include "../include/zesh_rs.h"
+
+void config_load(const char *path) { config_load_rs(path); }
+void config_save(const char *path) { config_save_rs(path); }
+
+#else /* !USE_RUST_CONFIG — original C implementation */
+
 /* Helper: parse_bool */
 static int parse_bool(const char *val) {
     return (strcmp(val,"true")==0 || strcmp(val,"1")==0 ||
@@ -165,3 +176,5 @@ void config_save(const char *path) {
 
     fclose(f);
 }
+
+#endif /* USE_RUST_CONFIG */

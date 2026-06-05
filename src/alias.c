@@ -6,6 +6,22 @@
 #include <string.h>
 #include <stdio.h>
 
+#ifdef USE_RUST_ALIAS
+/* Route the alias table through the Rust implementation (alias.rs). The full
+ * C implementation below is preserved verbatim under #else. */
+#include "../include/zesh_rs.h"
+
+void  alias_init(void)                            { alias_init_rs(); }
+void  alias_add(const char *name, const char *v)  { alias_add_rs(name, v); }
+void  alias_remove(const char *name)              { alias_remove_rs(name); }
+char *alias_expand(const char *name)              { return alias_expand_rs(name); }
+void  alias_list(void)                            { alias_list_rs(); }
+void  alias_free(void)                            { alias_free_rs(); }
+void  alias_each(void (*cb)(const char *name, const char *value, void *ud),
+                 void *ud)                        { alias_each_rs(cb, ud); }
+
+#else /* !USE_RUST_ALIAS — original C implementation */
+
 static Alias table[MAX_ALIASES];
 static int   alias_count = 0;
 
@@ -100,3 +116,5 @@ void alias_each(void (*cb)(const char *name, const char *value, void *ud), void 
         }
     }
 }
+
+#endif /* USE_RUST_ALIAS */

@@ -9,6 +9,19 @@
 #include <time.h>
 #include <unistd.h>
 
+#ifdef USE_RUST_SECURITY
+/* Route dangerous-command detection + audit log through Rust (security.rs).
+ * The full C implementation below is preserved verbatim under #else. */
+#include "../include/zesh_rs.h"
+
+SecurityLevel security_check(const char *cmdline, const char **reason) {
+    return (SecurityLevel)security_check_rs(cmdline, reason);
+}
+void security_audit(const char *cmdline) { security_audit_rs(cmdline); }
+void security_init(void)                 { security_init_rs(); }
+
+#else /* !USE_RUST_SECURITY — original C implementation */
+
 /* Danger rule table */
 
 typedef struct {
@@ -117,3 +130,5 @@ void security_audit(const char *cmdline) {
 void security_init(void) {
     /* nothing for now — config already loaded */
 }
+
+#endif /* USE_RUST_SECURITY */
