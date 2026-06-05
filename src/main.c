@@ -50,10 +50,12 @@ int run_script_line(const char *input) {
             if (g_expand_error) {
                 free(expanded);
                 g_expand_error = 0;
+                last_exit_status = 1;
                 return 1;
             }
             local_var_set(name, expanded ? expanded : ri);
             free(expanded);
+            last_exit_status = 0;
             return 0;
         }
     }

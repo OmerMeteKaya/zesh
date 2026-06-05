@@ -1795,16 +1795,27 @@ int run_builtin(Command *cmd) {
                     case 'c': resource = RLIMIT_CORE;    break;
                     case 'f': resource = RLIMIT_FSIZE;   break;
                     case 's': resource = RLIMIT_STACK;   break;
+                    #ifdef RLIMIT_AS
                     case 'v': resource = RLIMIT_AS;      break;
+                    #endif
                     case 'H': hard = 1;  break;
                     case 'S': soft = 1;  break;
                     case 'a': {
                         /* print all */
+                        #ifdef RLIMIT_AS
                         int resources[] = {RLIMIT_NOFILE, RLIMIT_CORE, RLIMIT_FSIZE,
                                            RLIMIT_STACK, RLIMIT_AS};
                         const char *names[] = {"open files", "core file size",
                                                "file size", "stack size", "virtual memory"};
-                        for (int ri = 0; ri < 5; ri++) {
+                        int nres = 5;
+                        #else
+                        int resources[] = {RLIMIT_NOFILE, RLIMIT_CORE, RLIMIT_FSIZE,
+                                           RLIMIT_STACK};
+                        const char *names[] = {"open files", "core file size",
+                                               "file size", "stack size"};
+                        int nres = 4;
+                        #endif
+                        for (int ri = 0; ri < nres; ri++) {
                             getrlimit(resources[ri], &rl);
                             if (rl.rlim_cur == RLIM_INFINITY)
                                 printf("%-24s unlimited\n", names[ri]);

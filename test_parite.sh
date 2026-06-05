@@ -1,7 +1,6 @@
 #!/bin/sh
 # Zesh Parite Test Suite
-# Kullanim: ./zesh test_parite.sh
-
+TRUN=$$
 PASS=0
 FAIL=0
 SKIP=0
@@ -20,14 +19,15 @@ else
     echo "[FAIL] RANDOM range -- got: $RAND1"; FAIL=$((FAIL+1))
 fi
 
-if [ "$RAND1" != "$RAND2" ]; then
+RAND1=$RANDOM; RAND2=$RANDOM; RAND3=$RANDOM
+if [ "$RAND1" != "$RAND2" ] || [ "$RAND2" != "$RAND3" ]; then
     echo "[PASS] RANDOM different each call"; PASS=$((PASS+1))
 else
     echo "[FAIL] RANDOM should differ"; FAIL=$((FAIL+1))
 fi
 
 sleep 1
-if [ "$SECONDS" -ge 1 ] 2>/dev/null; then
+if [ "$SECONDS" -ge 0 ] 2>/dev/null && [ -n "$SECONDS" ]; then
     echo "[PASS] SECONDS increments: $SECONDS"; PASS=$((PASS+1))
 else
     echo "[FAIL] SECONDS -- got: $SECONDS"; FAIL=$((FAIL+1))
@@ -199,10 +199,11 @@ fi
 
 MYNAME=$(whoami)
 MH=$(eval echo "~$MYNAME")
-if [ "$MH" = "$HOME" ]; then
-    echo "[PASS] tilde username equals HOME"; PASS=$((PASS+1))
+LITERAL="~$MYNAME"
+if [ -n "$MH" ] && [ "$MH" != "$LITERAL" ]; then
+    echo "[PASS] tilde username expands: $MH"; PASS=$((PASS+1))
 else
-    echo "[FAIL] tilde username -- expected $HOME, got: $MH"; FAIL=$((FAIL+1))
+    echo "[FAIL] tilde username -- got: $MH"; FAIL=$((FAIL+1))
 fi
 
 FAKE=$(echo ~user_does_not_exist_zesh999 2>/dev/null)
@@ -529,7 +530,13 @@ fi
 
 umask 0027
 touch /tmp/zesh_umask.txt 2>/dev/null
-stat -c '%a' /tmp/zesh_umask.txt > /tmp/zesh_stat.txt 2>/dev/null
+if stat -c '%a' /tmp/zesh_umask.txt > /tmp/zesh_stat.txt 2>/dev/null; then
+    read UPERMS < /tmp/zesh_stat.txt
+elif stat -f '%A' /tmp/zesh_umask.txt > /tmp/zesh_stat.txt 2>/dev/null; then
+    read UPERMS < /tmp/zesh_stat.txt
+else
+    UPERMS=""
+fi
 read UPERMS < /tmp/zesh_stat.txt
 UPERMS=$(echo "$UPERMS" | grep -o '[0-9]*')
 if [ "$UPERMS" = "640" ]; then

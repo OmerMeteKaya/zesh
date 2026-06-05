@@ -24,3 +24,4 @@ fuzz/findings/
 # NOTE: test_parite.sh is intentionally tracked — the CI runs it.
 # NOTE: *.sh is NOT globally ignored so the fuzz corpus (*.sh seeds),
 #       run_fuzz.sh and triage_crashes.sh are tracked.
+core.*

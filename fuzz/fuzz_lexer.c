@@ -12,7 +12,7 @@ int main(int argc, char *argv[]) {
     FUZZ_INIT();
     char buf[FUZZ_BUF_SIZE];
 
-    while (FUZZ_LOOP()) {
+    while (FUZZ_LOOP_PERSIST()) {
         size_t n = fuzz_read_one(buf, argc, argv);
         if (n == 0) continue;
 

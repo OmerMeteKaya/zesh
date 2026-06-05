@@ -29,7 +29,8 @@ static Command *add_command(Command **commands, int *count, int *capacity) {
 }
 
 static char **add_arg(char ***argv, int *count, int *capacity, char *value) {
-    if (*count >= *capacity) {
+    /* FIX: keep one slot for NULL terminator; also handle NULL *argv (e.g. after TOK_EOF resets argv) */
+    if (*count + 1 >= *capacity || !*argv) {
         *capacity *= 2;
         char **tmp = realloc(*argv, *capacity * sizeof(char *));
         if (!tmp) return NULL;
@@ -108,7 +109,7 @@ Pipeline *parse(Token *toks, int ntokens) {
         case TOK_DOUBLE_LBRACKET: {
             char *v = strdup("[[");
             if (!v) goto error;
-            if (!add_arg(&argv, &argv_count, &argv_capacity, v)) goto error;
+            if (!add_arg(&argv, &argv_count, &argv_capacity, v)) { free(v); goto error; }
             i++;
             while (i < ntokens &&
                    toks[i].type != TOK_DOUBLE_RBRACKET &&
@@ -119,7 +120,7 @@ Pipeline *parse(Token *toks, int ntokens) {
                 else if (toks[i].type == TOK_PIPE)  word = strdup("|");
                 else word = toks[i].value ? strdup(toks[i].value) : strdup("");
                 if (!word) goto error;
-                if (!add_arg(&argv, &argv_count, &argv_capacity, word)) goto error;
+                if (!add_arg(&argv, &argv_count, &argv_capacity, word)) { free(word); goto error; }
                 i++;
             }
             if (i < ntokens && toks[i].type == TOK_DOUBLE_RBRACKET) i++;
@@ -133,14 +134,14 @@ Pipeline *parse(Token *toks, int ntokens) {
         case TOK_DOUBLE_LPAREN: {
             char *v = strdup("((");
             if (!v) goto error;
-            if (!add_arg(&argv, &argv_count, &argv_capacity, v)) goto error;
+            if (!add_arg(&argv, &argv_count, &argv_capacity, v)) { free(v); goto error; }
             i++;
             while (i < ntokens &&
                    toks[i].type != TOK_DOUBLE_RPAREN &&
                    toks[i].type != TOK_EOF) {
                 char *word = toks[i].value ? strdup(toks[i].value) : strdup("");
                 if (!word) goto error;
-                if (!add_arg(&argv, &argv_count, &argv_capacity, word)) goto error;
+                if (!add_arg(&argv, &argv_count, &argv_capacity, word)) { free(word); goto error; }
                 i++;
             }
             if (i < ntokens && toks[i].type == TOK_DOUBLE_RPAREN) i++;
@@ -261,9 +262,11 @@ Pipeline *parse(Token *toks, int ntokens) {
             break;
         }
 
-        case TOK_WORD:
-                if (!add_arg(&argv, &argv_count, &argv_capacity,
-                             strdup(t.value))) goto error;
+        case TOK_WORD: {
+                char *w = strdup(t.value);
+                if (!w) goto error;
+                if (!add_arg(&argv, &argv_count, &argv_capacity, w)) { free(w); goto error; }
+            }
             i++;
             break;
 
@@ -310,11 +313,21 @@ Pipeline *parse(Token *toks, int ntokens) {
     return pipeline;
 
 error:
-    if (argv) free(argv);
+    if (argv) {
+        for (int a = 0; a < argv_count; a++) free(argv[a]);
+        free(argv);
+    }
     for (int j = 0; j < cmd_count; j++) {
+        if (commands[j].argv) {
+            for (int a = 0; a < commands[j].argc; a++)
+                free(commands[j].argv[a]);
+        }
         free(commands[j].argv);
         free(commands[j].infile);
         free(commands[j].outfile);
+        free(commands[j].heredoc_content);
+        for (int r = 0; r < commands[j].nfd_redirs; r++)
+            free(commands[j].fd_redirs[r].file);
     }
     free(commands);
     free(pipeline);
@@ -329,10 +342,14 @@ void pipeline_free(Pipeline *p) {
     if (!p) return;
     for (int i = 0; i < p->ncommands; i++) {
         Command *cmd = &p->commands[i];
+        if (cmd->argv) {
+            for (int j = 0; j < cmd->argc; j++) free(cmd->argv[j]);
+        }
         free(cmd->argv);
         free(cmd->infile);
         free(cmd->outfile);
         free(cmd->heredoc_content);
+        for (int j = 0; j < cmd->nfd_redirs; j++) free(cmd->fd_redirs[j].file);
     }
     free(p->commands);
     free(p);
@@ -822,6 +839,7 @@ static ForNode *parse_for(Token *toks, int ntokens, int *consumed) {
         while (i < ntokens &&
                !is_keyword(&toks[i], "do") &&
                toks[i].type != TOK_SEMI) {
+            if (!toks[i].value) break; /* FIX: non-word token (pipe, redir, etc.) has NULL value */
             if (node->nwords >= words_cap) {
                 words_cap *= 2;
                 char **tmp = realloc(node->words, words_cap * sizeof(char *));

@@ -32,7 +32,7 @@ int main(int argc, char *argv[]) {
 
     char buf[FUZZ_BUF_SIZE];
 
-    while (FUZZ_LOOP()) {
+    while (FUZZ_LOOP_PERSIST()) {
         size_t n = fuzz_read_one(buf, argc, argv);
         if (n == 0) continue;
 
@@ -45,6 +45,7 @@ int main(int argc, char *argv[]) {
         alarm(0);
 
         if (list) cmdlist_free(list);
+        func_free_all();
         tokens_free(toks, ntokens);
     }
     return 0;

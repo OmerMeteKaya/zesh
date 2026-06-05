@@ -182,13 +182,17 @@ Token *lex(const char *input, int *ntokens) {
                         int  hsi = 0;
                         if (*p == '\'' || *p == '"') {
                             char q = *p++;
-                            while (*p && *p != q)
+                            while (*p && *p != q) {
+                                if (hsi >= MAX_INPUT - 1) { while (*p && *p != q) p++; break; }
                                 hsbuf[hsi++] = *p++;
+                            }
                             if (*p == q) p++;
                         } else {
                             while (*p && !isspace(*p) &&
-                                   *p != '|' && *p != '&' && *p != ';')
+                                   *p != '|' && *p != '&' && *p != ';') {
+                                if (hsi >= MAX_INPUT - 1) break;
                                 hsbuf[hsi++] = *p++;
+                            }
                         }
                         hsbuf[hsi] = '\0';
                         (void)hs_start;
@@ -248,6 +252,7 @@ Token *lex(const char *input, int *ntokens) {
                 if (*(p+1) == '>') {
                     if (!add_token(&tokens, &count, &capacity, TOK_REDIR_APP, NULL)) return NULL;
                     p += 2;
+                    continue; /* FIX: missing continue caused fall-through past NUL into unallocated bytes */
                 } else if (*(p+1) == '&') {
                     /* >&N or >&- or >&$var : use TOK_REDIR_DUP_OUT with word following */
                     p += 2;
@@ -513,7 +518,7 @@ Token *lex(const char *input, int *ntokens) {
             if (*p == '(' || *p == ')') break;
             p++;
         }
-        if (p == start) { p++; continue; }
+        if (p == start) { if (!*p) break; p++; continue; } /* FIX: don't skip NUL — outer while(*p) must terminate cleanly */
 
         /* check if word ends with '=' and next char is quote */
         /* e.g. var="hello world" or var='hello world' */
@@ -533,11 +538,14 @@ Token *lex(const char *input, int *ntokens) {
             char quote = *p++;
             /* build combined: word_so_far + quoted_content */
             size_t prefix_len = p - start - 1; /* exclude opening quote */
+            if (prefix_len >= (size_t)(MAX_INPUT * 2 - 1))
+                prefix_len = MAX_INPUT * 2 - 1;
             char combined[MAX_INPUT * 2] = {0};
             memcpy(combined, start, prefix_len);
             size_t ci = prefix_len;
 
             while (*p && *p != quote) {
+                if (ci >= (size_t)(MAX_INPUT * 2 - 1)) { while (*p && *p != quote) p++; break; }
                 if (*p == '\\' && *(p+1) == quote) {
                     combined[ci++] = quote;
                     p += 2;

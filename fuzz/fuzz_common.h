@@ -40,16 +40,20 @@
  *   - Without AFL++: run the body exactly once (single-shot reproduction).
  */
 #ifdef __AFL_LOOP
-#define FUZZ_LOOP() __AFL_LOOP(1000)
+#define FUZZ_LOOP_PERSIST() __AFL_LOOP(1000)
 #else
-#define FUZZ_LOOP() (fuzz_once_only())
+#define FUZZ_LOOP_PERSIST() (fuzz_once_only())
+#endif
+
+/* Fork targets: persistent mode OFF — always single-shot inside AFL fork-server */
+#define FUZZ_LOOP_FORK() (fuzz_once_only())
+
 static inline int fuzz_once_only(void) {
     static int done = 0;
     if (done) return 0;
     done = 1;
     return 1;
 }
-#endif
 
 /* Read up to FUZZ_BUF_SIZE-1 bytes of one test case into `buf`.
  * Returns the byte count (0 on empty/EOF). Always NUL-terminates `buf`. */

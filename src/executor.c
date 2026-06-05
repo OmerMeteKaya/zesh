@@ -1564,6 +1564,7 @@ int execute(Pipeline *p) {
 
     } else {
         /* fork failed */
+        if (heredoc_pipe[0] >= 0) close(heredoc_pipe[0]);
         perror("fork");
         return -1;
     }
@@ -1762,9 +1763,16 @@ int execute(Pipeline *p) {
         if (p->background) {
             // Build command string for job
             char cmd_str[256] = {0};
-            for (int i = 0; i < p->commands[0].argc && i < 10; i++) {  // Limit to prevent overflow
-                if (i > 0) strcat(cmd_str, " ");
-                strcat(cmd_str, p->commands[0].argv[i]);
+            size_t cmd_rem = sizeof(cmd_str) - 1;
+            for (int i = 0; i < p->commands[0].argc && cmd_rem > 0; i++) {
+                if (!p->commands[0].argv[i]) break;
+                if (i > 0 && cmd_rem > 1) {
+                    strncat(cmd_str, " ", cmd_rem);
+                    cmd_rem--;
+                }
+                size_t alen = strlen(p->commands[0].argv[i]);
+                strncat(cmd_str, p->commands[0].argv[i], cmd_rem);
+                cmd_rem -= (alen < cmd_rem) ? alen : cmd_rem;
             }
             
             int job_id = job_add(pgid, cmd_str);

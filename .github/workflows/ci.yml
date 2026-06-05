@@ -178,6 +178,7 @@ jobs:
           environment_variables: 'STD'
           run: |
             set -x
+            export PATH=/bin:/sbin:/usr/bin:/usr/sbin:/usr/local/bin:$PATH
             sudo pkg install -y sqlite3 pkgconf
             # FreeBSD base ships clang; no -ldl needed (dlopen is in libc).
             SQLITE_CFLAGS="$(pkg-config --cflags sqlite3 2>/dev/null || echo -I/usr/local/include)"

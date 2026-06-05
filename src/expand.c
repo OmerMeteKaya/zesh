@@ -15,6 +15,8 @@
 #include <sys/stat.h>
 #include <time.h>
 #include <pwd.h>
+#include <errno.h>
+#include <signal.h>
 
 #define MAX_ARRAYS     64
 #define MAX_ARRAY_SIZE 256
@@ -297,7 +299,11 @@ pid_t g_last_bg_pid = 0;  /* $! */
 static const char *get_special_var(const char *name) {
     static char svbuf[64];
     if (strcmp(name, "RANDOM") == 0) {
+#ifdef FUZZ_MODE
+        snprintf(svbuf, sizeof(svbuf), "%d", 42);
+#else
         snprintf(svbuf, sizeof(svbuf), "%d", rand() % 32768);
+#endif
         return svbuf;
     }
     if (strcmp(name, "!") == 0) {
@@ -305,10 +311,14 @@ static const char *get_special_var(const char *name) {
         return svbuf;
     }
     if (strcmp(name, "SECONDS") == 0) {
+#ifdef FUZZ_MODE
+        return "0"; /* FIX: fixed value so $SECONDS is deterministic during fuzzing */
+#else
         if (!g_shell_start_time) g_shell_start_time = time(NULL);
         snprintf(svbuf, sizeof(svbuf), "%ld",
                  (long)(time(NULL) - g_shell_start_time));
         return svbuf;
+#endif
     }
     if (strcmp(name, "LINENO") == 0) {
         snprintf(svbuf, sizeof(svbuf), "%d", g_current_lineno);
@@ -883,6 +893,7 @@ static char **brace_expand(const char *word, int *count) {
 
     /* prefix: everything before { */
     int prefix_len = open - word;
+    if (prefix_len > 1023) prefix_len = 1023;
     char prefix[1024] = {0};
     strncpy(prefix, word, prefix_len);
 
@@ -891,6 +902,7 @@ static char **brace_expand(const char *word, int *count) {
 
     /* content between braces */
     int content_len = close - open - 1;
+    if (content_len > 1023) content_len = 1023;
     char content[1024] = {0};
     strncpy(content, open + 1, content_len);
 
@@ -1069,6 +1081,13 @@ static char *run_command_substitution(const char *cmd_str) {
     if (pipe(pipefd) < 0) return strdup("");
     g_expand_error = 0;
     fflush(NULL);
+
+    /* Block SIGCHLD so the signal handler cannot reap the child before we do */
+    sigset_t chldmask, oldmask;
+    sigemptyset(&chldmask);
+    sigaddset(&chldmask, SIGCHLD);
+    sigprocmask(SIG_BLOCK, &chldmask, &oldmask);
+
     pid_t pid = fork();
     if (pid < 0) {
         close(pipefd[0]); close(pipefd[1]);
@@ -1076,7 +1095,8 @@ static char *run_command_substitution(const char *cmd_str) {
     }
 
     if (pid == 0) {
-        /* child: redirect stdout to pipe write end */
+        /* child: unblock SIGCHLD and redirect stdout to pipe write end */
+        sigprocmask(SIG_SETMASK, &oldmask, NULL);
         close(pipefd[0]);
         dup2(pipefd[1], STDOUT_FILENO);
         close(pipefd[1]);
@@ -1137,15 +1157,17 @@ static char *run_command_substitution(const char *cmd_str) {
     }
     close(pipefd[0]);
     int status = 0;
-    waitpid(pid, &status, 0);
+    while (waitpid(pid, &status, 0) < 0 && errno == EINTR)
+        ;
+    sigprocmask(SIG_SETMASK, &oldmask, NULL);
     if (WIFEXITED(status)) {
         extern int last_exit_status;
         last_exit_status = WEXITSTATUS(status);
         if (WEXITSTATUS(status) != 0) {
             g_expand_error = 1;
         }
-    } else {
-        g_expand_error = 0;
+    } else if (WIFSIGNALED(status)) {
+        g_expand_error = 1;
     }
 
     buf[total] = '\0';
@@ -1389,7 +1411,12 @@ char *expand_word(const char *word, int last_exit_status) {
 
             /* $$ */
             if (*p == '$') {
+#ifdef FUZZ_MODE
+                /* FIX: fixed 5-digit PID so $$ doesn't cause buffer-realloc non-determinism */
+                char *s = strdup("99999");
+#else
                 char *s = itoa(getpid());
+#endif
                 if (s) { append_str(&buf, &len, &capacity, s); free(s); }
                 p++;
                 continue;
