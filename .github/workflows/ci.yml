@@ -315,12 +315,77 @@ jobs:
           retention-days: 7
 
   # ------------------------------------------------------------------
+  # Job 5c — Rust backend (USE_RUST=1) on ubuntu. Builds the zesh-rs
+  #          static library, links it into zesh and runs the parity suite
+  #          through it, then rebuilds the pure-C fallback and re-runs the
+  #          suite. Purely additive: every other job stays C-only.
+  # ------------------------------------------------------------------
+  rust-build:
+    name: ubuntu · rust-backend (USE_RUST=1)
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y libsqlite3-dev pkg-config
+
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Build Rust static library
+        run: cargo build --release --manifest-path zesh-rs/Cargo.toml
+
+      - name: Build zesh (USE_RUST=1) and run parity tests
+        shell: bash
+        run: |
+          set -x
+          SQLITE_CFLAGS="$(pkg-config --cflags sqlite3 2>/dev/null || true)"
+          SQLITE_LIBS="$(pkg-config --libs sqlite3 2>/dev/null || echo -lsqlite3)"
+          cc -Wall -std=c17 -D_POSIX_C_SOURCE=200809L \
+            -DUSE_RUST_PARSER -DUSE_RUST_EXPAND \
+            -Iinclude $SQLITE_CFLAGS \
+            src/*.c zesh-rs/target/release/libzesh_rs.a \
+            -o zesh_rust \
+            $SQLITE_LIBS -ldl -lpthread -lm
+          ./zesh_rust test_parite.sh > out_rust.txt 2>&1 || true
+          echo "----- out_rust.txt -----"; cat out_rust.txt
+          grep -q "0 FAIL" out_rust.txt
+
+      - name: Build zesh (C fallback, USE_RUST=0) and re-run parity
+        shell: bash
+        run: |
+          set -x
+          SQLITE_CFLAGS="$(pkg-config --cflags sqlite3 2>/dev/null || true)"
+          SQLITE_LIBS="$(pkg-config --libs sqlite3 2>/dev/null || echo -lsqlite3)"
+          cc -Wall -std=c17 -D_POSIX_C_SOURCE=200809L \
+            -Iinclude $SQLITE_CFLAGS \
+            src/*.c -o zesh_c \
+            $SQLITE_LIBS -ldl
+          ./zesh_c test_parite.sh > out_c.txt 2>&1 || true
+          echo "----- out_c.txt -----"; cat out_c.txt
+          grep -q "0 FAIL" out_c.txt
+
+      - name: Upload logs
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: logs-rust-build
+          path: |
+            out_rust.txt
+            out_c.txt
+          if-no-files-found: ignore
+          retention-days: 7
+
+  # ------------------------------------------------------------------
   # Job 6 — overall pass/fail summary.
   # ------------------------------------------------------------------
   summary:
     name: CI summary
     runs-on: ubuntu-latest
-    needs: [build-and-test, freebsd, alpine, openbsd]
+    needs: [build-and-test, freebsd, alpine, openbsd, rust-build]
     if: always()
     steps:
       - name: Report
@@ -330,6 +395,7 @@ jobs:
           echo "freebsd:        ${{ needs.freebsd.result }}"
           echo "alpine:         ${{ needs.alpine.result }}"
           echo "openbsd:        ${{ needs.openbsd.result }}"
+          echo "rust-build:     ${{ needs.rust-build.result }}"
           {
             echo "## CI summary"
             echo "| Job | Result |"
@@ -338,6 +404,7 @@ jobs:
             echo "| freebsd | ${{ needs.freebsd.result }} |"
             echo "| alpine | ${{ needs.alpine.result }} |"
             echo "| openbsd | ${{ needs.openbsd.result }} |"
+            echo "| rust-build | ${{ needs.rust-build.result }} |"
           } >> "$GITHUB_STEP_SUMMARY"
           # Gate on the primary matrix and Alpine; BSD jobs are emulated
           # and may be flaky — they appear in the table but don't block.
@@ -347,5 +414,9 @@ jobs:
           fi
           if [ "${{ needs.alpine.result }}" != "success" ]; then
             echo "::error::alpine failed"
+            exit 1
+          fi
+          if [ "${{ needs.rust-build.result }}" != "success" ]; then
+            echo "::error::rust-build failed"
             exit 1
           fi

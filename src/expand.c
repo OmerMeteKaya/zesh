@@ -1241,7 +1241,27 @@ static char *decode_ansi_c_quoting(const char *str) {
     return NULL;
 }
 
+#ifdef USE_RUST_EXPAND
+#include "../include/zesh_rs.h"
+
+static char *expand_word_c_impl(const char *word, int last_exit_status);
+
+/* Try the Rust parameter-expansion path first; it returns NULL with
+ * g_expand_error == 0 to mean "not handled by Rust — use the C version"
+ * (command/process/arith substitution, tilde, ANSI-C quoting). A NULL with
+ * g_expand_error != 0 is a genuine expansion error (e.g. ${var:?}). */
 char *expand_word(const char *word, int last_exit_status) {
+    char *result = expand_word_rs(word, last_exit_status);
+    if (result == NULL && g_expand_error == 0)
+        return expand_word_c_impl(word, last_exit_status);
+    return result;
+}
+
+static char *expand_word_c_impl(const char *word, int last_exit_status)
+#else
+char *expand_word(const char *word, int last_exit_status)
+#endif
+{
     if (!word) return NULL;
 
     size_t word_len = strlen(word);

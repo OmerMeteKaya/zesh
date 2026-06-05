@@ -1,0 +1,22 @@
+[package]
+name    = "zesh-rs"
+version = "0.1.0"
+edition = "2021"
+description = "Rust reimplementation of zesh's list parser and parameter expansion, linked into the C shell as a static library."
+
+[lib]
+name       = "zesh_rs"
+crate-type = ["staticlib"]
+
+[dependencies]
+libc = "0.2"
+
+[features]
+# When enabled, non-deterministic expansions ($$, etc.) use fixed values so
+# fuzzing is reproducible — mirrors the C side's -DFUZZ_MODE.
+fuzz = []
+
+[profile.release]
+opt-level = 3
+lto       = true
+panic     = "abort"   # critical: never unwind across the FFI boundary

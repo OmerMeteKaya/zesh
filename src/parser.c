@@ -9,7 +9,9 @@
 /* ------------------------------------------------------------------ */
 /*  Forward declarations                                                */
 /* ------------------------------------------------------------------ */
+#ifndef USE_RUST_PARSER
 static CmdList *parse_list_internal(Token *toks, int ntokens);
+#endif
 
 /* ------------------------------------------------------------------ */
 /*  Helpers — argv / command builders (unchanged from original)        */
@@ -358,6 +360,7 @@ void pipeline_free(Pipeline *p) {
 /* ------------------------------------------------------------------ */
 /*  cmdlist_free  (forward-declared; also frees compound nodes)        */
 /* ------------------------------------------------------------------ */
+#ifndef USE_RUST_PARSER
 
 void cmdlist_free(CmdList *list) {
     if (!list) return;
@@ -1526,3 +1529,17 @@ error:
 CmdList *parse_list(Token *toks, int ntokens) {
     return parse_list_internal(toks, ntokens);
 }
+
+#else  /* USE_RUST_PARSER — list parser + recursive free provided by zesh-rs */
+
+#include "../include/zesh_rs.h"
+
+CmdList *parse_list(Token *toks, int ntokens) {
+    return parse_list_rs(toks, ntokens);
+}
+
+void cmdlist_free(CmdList *list) {
+    cmdlist_free_rs(list);
+}
+
+#endif /* USE_RUST_PARSER */
