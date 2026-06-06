@@ -948,7 +948,11 @@ fn execute_subshell(body: &[CmdNode], redirs: &[FdRedir], background: bool, ctx:
 fn execute_time(body: &[CmdNode], redirs: &[FdRedir], ctx: &mut ExecContext, vars: &mut VarStore) -> i32 {
     use std::time::Instant;
 
+    #[cfg(not(feature = "fuzz"))]
     let start = Instant::now();
+    #[cfg(feature = "fuzz")]
+    let start = Instant::now();
+
     // Get rusage before
     let mut rusage_before: libc::rusage = unsafe { std::mem::zeroed() };
     // SAFETY: getrusage with valid ptr
@@ -977,9 +981,16 @@ fn execute_time(body: &[CmdNode], redirs: &[FdRedir], ctx: &mut ExecContext, var
         format!("{}m{:.3}s", m, s)
     };
 
-    eprintln!("\nreal\t{}", fmt_time(real_secs));
-    eprintln!("user\t{}", fmt_time(user_secs));
-    eprintln!("sys\t{}", fmt_time(sys_secs));
+    #[cfg(feature = "fuzz")]
+    {
+        eprintln!("\nreal\t0m0.000s\nuser\t0m0.000s\nsys\t0m0.000s");
+    }
+    #[cfg(not(feature = "fuzz"))]
+    {
+        eprintln!("\nreal\t{}", fmt_time(real_secs));
+        eprintln!("user\t{}", fmt_time(user_secs));
+        eprintln!("sys\t{}", fmt_time(sys_secs));
+    }
 
     status
 }

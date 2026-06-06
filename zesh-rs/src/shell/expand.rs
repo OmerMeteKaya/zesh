@@ -728,13 +728,25 @@ fn expand_dollar(chars: &[char], start: usize, vars: &crate::shell::vars::VarSto
         '$' => {
             i += 1;
             let pid = vars.get_str("$").unwrap_or_else(|| {
-                std::process::id().to_string()
+                #[cfg(feature = "fuzz")]
+                { "99999".to_string() }
+                #[cfg(not(feature = "fuzz"))]
+                {
+                    std::process::id().to_string()
+                }
             });
             (pid, i - start)
         }
         '!' => {
             i += 1;
-            let bg_pid = vars.get_str("!").unwrap_or_default();
+            let bg_pid = {
+                #[cfg(feature = "fuzz")]
+                { "99998".to_string() }
+                #[cfg(not(feature = "fuzz"))]
+                {
+                    vars.get_str("!").unwrap_or_default()
+                }
+            };
             (bg_pid, i - start)
         }
         '0' => {
@@ -766,12 +778,21 @@ fn expand_dollar(chars: &[char], start: usize, vars: &crate::shell::vars::VarSto
 fn expand_special_var(name: &str, vars: &crate::shell::vars::VarStore, _script_file: &str) -> String {
     match name {
         "RANDOM" => {
-            // Return random number 0-32767
-            let r = unsafe { libc::rand() } as u32 & 0x7fff;
-            r.to_string()
+            #[cfg(feature = "fuzz")]
+            { "42".to_string() }
+            #[cfg(not(feature = "fuzz"))]
+            {
+                let r = unsafe { libc::rand() } as u32 & 0x7fff;
+                r.to_string()
+            }
         }
         "SECONDS" => {
-            vars.get_str("SECONDS").unwrap_or_else(|| "0".to_string())
+            #[cfg(feature = "fuzz")]
+            { "42".to_string() }
+            #[cfg(not(feature = "fuzz"))]
+            {
+                vars.get_str("SECONDS").unwrap_or_else(|| "0".to_string())
+            }
         }
         "LINENO" => {
             vars.get_str("LINENO").unwrap_or_else(|| "0".to_string())
