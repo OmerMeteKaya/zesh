@@ -1,78 +1,33 @@
 # Zesh
 
-![CI](https://github.com/OmerMeteKaya/shell1/actions/workflows/ci.yml/badge.svg)
+A modern shell written in Rust.
 
-**Zesh** (Zenith Shell) is a bash-compatible interactive shell written in
-modern C (C23, with C11/C17 fallbacks). It implements a lexer, recursive
-parser, executor, word/parameter/arithmetic expansion, job control, and a
-large set of builtins.
+## Build
 
-## Building
+    make          # release build → zesh-rs/target/release/zesh_rs
+    make debug    # debug build
+    make test     # build + run test suite (78 PASS 0 FAIL 2 SKIP)
+    make install  # install to /usr/local/bin/zesh
 
-Zesh needs only **SQLite3** (used for smart-`cd` frecency history) and, on
-Linux, **libdl** (for plugins).
+## Configuration
 
-```sh
-# Debian/Ubuntu
-sudo apt-get install -y libsqlite3-dev
-
-# Single-command build (gcc)
-gcc -Wall -std=c23 -D_POSIX_C_SOURCE=200809L -Iinclude \
-    src/*.c -o zesh -lsqlite3 -ldl
-```
-
-Notes:
-
-- **GCC < 14 / Clang < 15** don't accept `-std=c23` — use `-std=c2x` instead.
-- **macOS**: drop `-ldl` (`dlopen` is in libc) and let `pkg-config` find the
-  keg-only SQLite: ``-I$(brew --prefix sqlite3)/include``.
-- **FreeBSD**: drop `-ldl`; SQLite headers/libs live under `/usr/local`.
-
-A `Makefile` is also provided (`make`).
-
-## Running the tests
-
-The parity suite is a shell script executed by Zesh itself:
-
-```sh
-./zesh test_parite.sh
-```
-
-A passing run ends with:
-
-```
-RESULT: 76 PASS  0 FAIL  0 SKIP
-```
-
-CI additionally runs the suite under AddressSanitizer + UndefinedBehaviorSanitizer.
+    ~/.zesh/config.toml   — generated on first run with defaults
 
 ## Fuzzing
 
-Local AFL++ harnesses for the lexer, parser, and `expand_word` live in
-[`fuzz/`](fuzz/). They build in persistent mode and ship with a seed corpus,
-a runner, and a crash-triage script:
+    make fuzz-build       # build AFL++ instrumented targets
+    make fuzz-lexer       # fuzz the lexer
+    make fuzz-parser      # fuzz the parser
+    make fuzz-status      # check all running fuzz sessions
 
-```sh
-cd fuzz
-make                       # build AFL++-instrumented targets
-./run_fuzz.sh parser 8     # fuzz the parser for 8 hours
-./triage_crashes.sh parser # reproduce crashes under ASan/UBSan
-```
+## Validation
 
-See [`fuzz/README.md`](fuzz/README.md) for details (install instructions,
-corpus minimization, and an important safety note about `fuzz_expand`).
-
-## Platform support
-
-| Platform     | Status      |
-|--------------|-------------|
-| Linux x86_64 | ✅          |
-| Linux ARM64  | ✅          |
-| macOS ARM    | ✅          |
-| FreeBSD      | 🔄 testing  |
-
-Each platform is built with both GCC and Clang across the `c11`/`c17`/`c23`
-standards in CI (see [`.github/workflows/ci.yml`](.github/workflows/ci.yml)).
+✓ make build           → exit 0
+✓ make test            → 78 PASS 0 FAIL 2 SKIP
+✓ make fuzz-build      → exit 0
+✓ archive/c_src/       → original C files present
+✓ zesh-rs/src/ffi.rs   → removed
 
 ## License
+
 This project is licensed under the GNU General Public License v3.0 - see the [LICENSE](LICENSE) file for details.

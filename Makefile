@@ -1,107 +1,98 @@
-CC      = gcc
-CFLAGS  = -Wall -Wextra -std=c23 -Iinclude
-LDFLAGS = -lsqlite3 -lcurl -lncurses -ldl
+CARGO        = cargo
+RELEASE_BIN  = zesh-rs/target/release/zesh_rs
+DEBUG_BIN    = zesh-rs/target/debug/zesh_rs
+FUZZ_DIR     = zesh-rs/fuzz
+CORPUS_DIR   = fuzz/corpus
+FINDINGS_DIR = fuzz/findings/rust
 
-# ---- optional Rust backend ------------------------------------------------
-# Build with `make USE_RUST=1` to route every ported module through the
-# zesh-rs static library. Individual modules can also be toggled on their own
-# for incremental testing, e.g.:
-#     make USE_RUST_LEXER=1     # only the lexer in Rust, everything else C
-#     make USE_RUST=1           # every ported module in Rust
-# Each per-module switch defaults to USE_RUST, so USE_RUST=1 turns them all on.
-USE_RUST ?= 1
-RUST_LIB  = zesh-rs/target/release/libzesh_rs.a
+.PHONY: all build debug test install clean \
+        fuzz-build fuzz-lexer fuzz-parser fuzz-expand fuzz-script \
+        fuzz-differential fuzz-all fuzz-status
 
-USE_RUST_PARSER    ?= $(USE_RUST)
-USE_RUST_EXPAND    ?= $(USE_RUST)
-USE_RUST_LEXER     ?= $(USE_RUST)
-USE_RUST_JOBS      ?= $(USE_RUST)
-USE_RUST_SIGNALS   ?= $(USE_RUST)
-USE_RUST_ALIAS     ?= $(USE_RUST)
-USE_RUST_SECURITY  ?= $(USE_RUST)
-USE_RUST_EXECUTOR  ?= $(USE_RUST)
-USE_RUST_BUILTINS  ?= $(USE_RUST)
-USE_RUST_HISTORY   ?= $(USE_RUST)
-USE_RUST_CONFIG    ?= $(USE_RUST)
-USE_RUST_RC        ?= $(USE_RUST)
-USE_RUST_HIGHLIGHT ?= $(USE_RUST)
-USE_RUST_COMPLETIONS ?= $(USE_RUST)
-USE_RUST_INPUT     ?= $(USE_RUST)
+# Default: release build
+all: build
 
-RUST_CFLAGS :=
-ifeq ($(USE_RUST_PARSER),1)
-    RUST_CFLAGS += -DUSE_RUST_PARSER
-endif
-ifeq ($(USE_RUST_EXPAND),1)
-    RUST_CFLAGS += -DUSE_RUST_EXPAND
-endif
-ifeq ($(USE_RUST_LEXER),1)
-    RUST_CFLAGS += -DUSE_RUST_LEXER
-endif
-ifeq ($(USE_RUST_JOBS),1)
-    RUST_CFLAGS += -DUSE_RUST_JOBS
-endif
-ifeq ($(USE_RUST_SIGNALS),1)
-    RUST_CFLAGS += -DUSE_RUST_SIGNALS
-endif
-ifeq ($(USE_RUST_ALIAS),1)
-    RUST_CFLAGS += -DUSE_RUST_ALIAS
-endif
-ifeq ($(USE_RUST_SECURITY),1)
-    RUST_CFLAGS += -DUSE_RUST_SECURITY
-endif
-ifeq ($(USE_RUST_EXECUTOR),1)
-    RUST_CFLAGS += -DUSE_RUST_EXECUTOR
-endif
-ifeq ($(USE_RUST_BUILTINS),1)
-    RUST_CFLAGS += -DUSE_RUST_BUILTINS
-endif
-ifeq ($(USE_RUST_HISTORY),1)
-    RUST_CFLAGS += -DUSE_RUST_HISTORY
-endif
-ifeq ($(USE_RUST_CONFIG),1)
-    RUST_CFLAGS += -DUSE_RUST_CONFIG
-endif
-ifeq ($(USE_RUST_RC),1)
-    RUST_CFLAGS += -DUSE_RUST_RC
-endif
-ifeq ($(USE_RUST_HIGHLIGHT),1)
-    RUST_CFLAGS += -DUSE_RUST_HIGHLIGHT
-endif
-ifeq ($(USE_RUST_COMPLETIONS),1)
-    RUST_CFLAGS += -DUSE_RUST_COMPLETIONS
-endif
-ifeq ($(USE_RUST_INPUT),1)
-    RUST_CFLAGS += -DUSE_RUST_INPUT
-endif
+build:
+	$(CARGO) build --release --manifest-path zesh-rs/Cargo.toml
 
-# If any module is routed through Rust, compile with its -D guards and link the
-# static library (it must precede the system libs it depends on).
-ifneq ($(strip $(RUST_CFLAGS)),)
-    CFLAGS      += $(RUST_CFLAGS)
-    LDFLAGS     := $(RUST_LIB) $(LDFLAGS) -lpthread -lm
-    RUST_PREREQ  = rust-lib
-endif
+debug:
+	$(CARGO) build --manifest-path zesh-rs/Cargo.toml
 
-SRC  = $(wildcard src/*.c)
-OBJ  = $(SRC:.c=.o)
-BIN  = zesh
+test: build
+	$(RELEASE_BIN) test_parite.sh
 
-all: $(BIN)
+test-debug: debug
+	$(DEBUG_BIN) test_parite.sh
 
-# Build the Rust static library. The C-facing header (include/zesh_rs.h) is
-# committed and kept in sync by hand, so no cbindgen step is required here.
-rust-lib:
-	cargo build --release --manifest-path zesh-rs/Cargo.toml
+install: build
+	install -m 755 $(RELEASE_BIN) /usr/local/bin/zesh
+	@echo "Installed to /usr/local/bin/zesh"
 
-$(BIN): $(RUST_PREREQ) $(OBJ)
-	$(CC) $(OBJ) -o $@ $(LDFLAGS)
-
-plugins/%.so: plugins/%.c
-	$(CC) -shared -fPIC $(CFLAGS) $< -o $@
+# Run directly without installing
+run: build
+	$(RELEASE_BIN)
 
 clean:
-	rm -f $(OBJ) $(BIN) plugins/*.so
-	cargo clean --manifest-path zesh-rs/Cargo.toml || true
+	$(CARGO) clean --manifest-path zesh-rs/Cargo.toml
+	$(CARGO) clean --manifest-path $(FUZZ_DIR)/Cargo.toml || true
 
-.PHONY: all rust-lib clean
+# --- Fuzzing ---
+fuzz-build:
+	cd $(FUZZ_DIR) && $(CARGO) afl build --release
+
+fuzz-lexer: fuzz-build
+	mkdir -p $(FINDINGS_DIR)/lexer
+	$(CARGO) afl fuzz \
+	  -i $(CORPUS_DIR)/lexer \
+	  -o $(FINDINGS_DIR)/lexer \
+	  -t 5000 -m 256 \
+	  -- $(FUZZ_DIR)/target/release/fuzz_lexer @@
+
+fuzz-parser: fuzz-build
+	mkdir -p $(FINDINGS_DIR)/parser
+	$(CARGO) afl fuzz \
+	  -i $(CORPUS_DIR)/parser \
+	  -o $(FINDINGS_DIR)/parser \
+	  -t 5000 -m 256 \
+	  -- $(FUZZ_DIR)/target/release/fuzz_parser @@
+
+fuzz-expand: fuzz-build
+	mkdir -p $(FINDINGS_DIR)/expand
+	$(CARGO) afl fuzz \
+	  -i $(CORPUS_DIR)/expand \
+	  -o $(FINDINGS_DIR)/expand \
+	  -t 5000 -m 256 \
+	  -- $(FUZZ_DIR)/target/release/fuzz_expand @@
+
+fuzz-script: fuzz-build
+	mkdir -p $(FINDINGS_DIR)/script
+	$(CARGO) afl fuzz \
+	  -i $(CORPUS_DIR)/script \
+	  -o $(FINDINGS_DIR)/script \
+	  -t 3000 -m 512 \
+	  -- $(FUZZ_DIR)/target/release/fuzz_script @@
+
+fuzz-differential: fuzz-build
+	mkdir -p $(FINDINGS_DIR)/differential
+	$(CARGO) afl fuzz \
+	  -i $(CORPUS_DIR)/lexer \
+	  -o $(FINDINGS_DIR)/differential \
+	  -t 5000 -m 256 \
+	  -- $(FUZZ_DIR)/target/release/fuzz_differential @@
+
+fuzz-all: fuzz-build
+	@echo "Start each target in a separate terminal:"
+	@echo "  make fuzz-lexer"
+	@echo "  make fuzz-parser"
+	@echo "  make fuzz-expand"
+	@echo "  make fuzz-script"
+	@echo "  make fuzz-differential"
+
+fuzz-status:
+	@for t in lexer parser expand script differential; do \
+	  echo "=== $$t ==="; \
+	  grep -E 'execs_done|crashes_found|stability|bitmap_cvg' \
+	    $(FINDINGS_DIR)/$$t/default/fuzzer_stats 2>/dev/null || \
+	    echo "not running"; \
+	  echo; \
+	done

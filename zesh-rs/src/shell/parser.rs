@@ -2,14 +2,17 @@
 
 use crate::shell::types::*;
 
+const MAX_PARSE_DEPTH: usize = 128;
+
 pub struct Parser {
     tokens: Vec<Token>,
     pos: usize,
+    depth: usize,
 }
 
 impl Parser {
     pub fn new(tokens: Vec<Token>) -> Self {
-        Parser { tokens, pos: 0 }
+        Parser { tokens, pos: 0, depth: 0 }
     }
 
     fn peek(&self) -> &Token {
@@ -56,6 +59,16 @@ impl Parser {
     }
 
     pub fn parse_list(&mut self) -> Vec<CmdNode> {
+        if self.depth >= MAX_PARSE_DEPTH {
+            return Vec::new();
+        }
+        self.depth += 1;
+        let result = self.parse_list_inner();
+        self.depth -= 1;
+        result
+    }
+
+    fn parse_list_inner(&mut self) -> Vec<CmdNode> {
         let mut nodes = Vec::new();
         self.skip_newlines();
 
@@ -96,6 +109,16 @@ impl Parser {
     }
 
     fn parse_and_or(&mut self) -> Option<CmdNode> {
+        if self.depth >= MAX_PARSE_DEPTH {
+            return None;
+        }
+        self.depth += 1;
+        let result = self.parse_and_or_inner();
+        self.depth -= 1;
+        result
+    }
+
+    fn parse_and_or_inner(&mut self) -> Option<CmdNode> {
         let mut left = self.parse_pipeline()?;
 
         loop {
@@ -146,6 +169,16 @@ impl Parser {
     }
 
     fn parse_pipeline(&mut self) -> Option<CmdNode> {
+        if self.depth >= MAX_PARSE_DEPTH {
+            return None;
+        }
+        self.depth += 1;
+        let result = self.parse_pipeline_inner();
+        self.depth -= 1;
+        result
+    }
+
+    fn parse_pipeline_inner(&mut self) -> Option<CmdNode> {
         let negate = if self.peek_kind() == &TokKind::Bang {
             self.advance();
             true
@@ -216,6 +249,16 @@ impl Parser {
     }
 
     fn parse_compound(&mut self) -> Option<CmdNode> {
+        if self.depth >= MAX_PARSE_DEPTH {
+            return None;
+        }
+        self.depth += 1;
+        let result = self.parse_compound_inner();
+        self.depth -= 1;
+        result
+    }
+
+    fn parse_compound_inner(&mut self) -> Option<CmdNode> {
         let line = self.peek().line;
 
         match self.peek_kind() {
@@ -346,6 +389,16 @@ impl Parser {
     }
 
     fn parse_if(&mut self) -> Option<CmdNode> {
+        if self.depth >= MAX_PARSE_DEPTH {
+            return None;
+        }
+        self.depth += 1;
+        let result = self.parse_if_inner();
+        self.depth -= 1;
+        result
+    }
+
+    fn parse_if_inner(&mut self) -> Option<CmdNode> {
         let line = self.peek().line;
         self.advance(); // if
         self.skip_newlines();
@@ -392,6 +445,16 @@ impl Parser {
     }
 
     fn parse_while(&mut self) -> Option<CmdNode> {
+        if self.depth >= MAX_PARSE_DEPTH {
+            return None;
+        }
+        self.depth += 1;
+        let result = self.parse_while_inner();
+        self.depth -= 1;
+        result
+    }
+
+    fn parse_while_inner(&mut self) -> Option<CmdNode> {
         let line = self.peek().line;
         self.advance(); // while
         self.skip_newlines();
@@ -412,6 +475,16 @@ impl Parser {
     }
 
     fn parse_until(&mut self) -> Option<CmdNode> {
+        if self.depth >= MAX_PARSE_DEPTH {
+            return None;
+        }
+        self.depth += 1;
+        let result = self.parse_until_inner();
+        self.depth -= 1;
+        result
+    }
+
+    fn parse_until_inner(&mut self) -> Option<CmdNode> {
         let line = self.peek().line;
         self.advance(); // until
         self.skip_newlines();
@@ -432,6 +505,16 @@ impl Parser {
     }
 
     fn parse_for(&mut self) -> Option<CmdNode> {
+        if self.depth >= MAX_PARSE_DEPTH {
+            return None;
+        }
+        self.depth += 1;
+        let result = self.parse_for_inner();
+        self.depth -= 1;
+        result
+    }
+
+    fn parse_for_inner(&mut self) -> Option<CmdNode> {
         let line = self.peek().line;
         self.advance(); // for
         let var = self.consume().value;
@@ -469,6 +552,16 @@ impl Parser {
     }
 
     fn parse_case(&mut self) -> Option<CmdNode> {
+        if self.depth >= MAX_PARSE_DEPTH {
+            return None;
+        }
+        self.depth += 1;
+        let result = self.parse_case_inner();
+        self.depth -= 1;
+        result
+    }
+
+    fn parse_case_inner(&mut self) -> Option<CmdNode> {
         let line = self.peek().line;
         self.advance(); // case
         let word = self.consume();
@@ -569,6 +662,16 @@ impl Parser {
     }
 
     fn parse_select(&mut self) -> Option<CmdNode> {
+        if self.depth >= MAX_PARSE_DEPTH {
+            return None;
+        }
+        self.depth += 1;
+        let result = self.parse_select_inner();
+        self.depth -= 1;
+        result
+    }
+
+    fn parse_select_inner(&mut self) -> Option<CmdNode> {
         let line = self.peek().line;
         self.advance(); // select
         let var = self.consume().value;
@@ -603,6 +706,16 @@ impl Parser {
     }
 
     fn parse_coproc(&mut self) -> Option<CmdNode> {
+        if self.depth >= MAX_PARSE_DEPTH {
+            return None;
+        }
+        self.depth += 1;
+        let result = self.parse_coproc_inner();
+        self.depth -= 1;
+        result
+    }
+
+    fn parse_coproc_inner(&mut self) -> Option<CmdNode> {
         let line = self.peek().line;
         self.advance(); // coproc
         let name = if matches!(self.peek_kind(), TokKind::Word) {
@@ -630,6 +743,9 @@ impl Parser {
     }
 
     fn parse_compound_list_until(&mut self, terminators: &[TokKind]) -> Vec<CmdNode> {
+        if self.depth >= MAX_PARSE_DEPTH {
+            return Vec::new();
+        }
         let mut nodes = Vec::new();
         self.skip_newlines();
         loop {

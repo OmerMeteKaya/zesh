@@ -2,6 +2,9 @@
 
 use std::collections::HashMap;
 
+const MAX_ARITH_DEPTH: usize = 64;
+const MAX_EXPAND_DEPTH: usize = 32;
+
 // Simple arithmetic evaluator (for $(()) and declare -i)
 pub fn eval_arith_simple(expr: &str) -> Result<i64, String> {
     let expr = expr.trim();
@@ -17,9 +20,15 @@ pub fn eval_arith_simple(expr: &str) -> Result<i64, String> {
 }
 
 fn eval_arith_expr(expr: &str) -> Result<i64, String> {
+    ARITH_DEPTH.with(|d| {
+        *d.borrow_mut() = 0;
+    });
     let tokens = arith_tokenize(expr)?;
     let mut pos = 0;
     let result = arith_parse_expr(&tokens, &mut pos)?;
+    ARITH_DEPTH.with(|d| {
+        *d.borrow_mut() = 0;
+    });
     Ok(result)
 }
 
@@ -170,7 +179,22 @@ fn arith_tokenize(s: &str) -> Result<Vec<ATok>, String> {
 }
 
 fn arith_parse_expr(tokens: &[ATok], pos: &mut usize) -> Result<i64, String> {
-    arith_parse_ternary(tokens, pos)
+    let depth_exceeded = ARITH_DEPTH.with(|d| {
+        let mut depth = d.borrow_mut();
+        if *depth >= MAX_ARITH_DEPTH {
+            return true;
+        }
+        *depth += 1;
+        false
+    });
+    if depth_exceeded {
+        return Err("Arithmetic nesting too deep".to_string());
+    }
+    let result = arith_parse_ternary(tokens, pos);
+    ARITH_DEPTH.with(|d| {
+        *d.borrow_mut() -= 1;
+    });
+    result
 }
 
 fn arith_parse_ternary(tokens: &[ATok], pos: &mut usize) -> Result<i64, String> {
@@ -353,6 +377,8 @@ fn arith_parse_unary(tokens: &[ATok], pos: &mut usize) -> Result<i64, String> {
 thread_local! {
     static ARITH_VARS: std::cell::RefCell<Option<std::collections::HashMap<String, String>>> =
         std::cell::RefCell::new(None);
+    static ARITH_DEPTH: std::cell::RefCell<usize> = std::cell::RefCell::new(0);
+    static EXPAND_DEPTH: std::cell::RefCell<usize> = std::cell::RefCell::new(0);
     // Set to true when ${var:?err} triggers
     pub static PARAM_ERROR: std::cell::RefCell<bool> = std::cell::RefCell::new(false);
     pub static PARAM_ASSIGN: std::cell::RefCell<Vec<(String, String)>> = std::cell::RefCell::new(Vec::new());
@@ -453,6 +479,27 @@ pub fn expand_word_no_split(word: &str, _quoted: bool, vars: &crate::shell::vars
 }
 
 pub fn expand_string(s: &str, vars: &crate::shell::vars::VarStore, script_file: &str) -> String {
+    let depth_exceeded = EXPAND_DEPTH.with(|d| {
+        let mut depth = d.borrow_mut();
+        if *depth >= MAX_EXPAND_DEPTH {
+            return true;
+        }
+        *depth += 1;
+        false
+    });
+    if depth_exceeded {
+        return String::new();
+    }
+
+    let result = expand_string_inner(s, vars, script_file);
+
+    EXPAND_DEPTH.with(|d| {
+        *d.borrow_mut() -= 1;
+    });
+    result
+}
+
+fn expand_string_inner(s: &str, vars: &crate::shell::vars::VarStore, script_file: &str) -> String {
     let chars: Vec<char> = s.chars().collect();
     let mut result = String::new();
     let mut i = 0;
@@ -681,13 +728,25 @@ fn expand_dollar(chars: &[char], start: usize, vars: &crate::shell::vars::VarSto
         '$' => {
             i += 1;
             let pid = vars.get_str("$").unwrap_or_else(|| {
-                std::process::id().to_string()
+                #[cfg(feature = "fuzz")]
+                { "99999".to_string() }
+                #[cfg(not(feature = "fuzz"))]
+                {
+                    std::process::id().to_string()
+                }
             });
             (pid, i - start)
         }
         '!' => {
             i += 1;
-            let bg_pid = vars.get_str("!").unwrap_or_default();
+            let bg_pid = {
+                #[cfg(feature = "fuzz")]
+                { "99998".to_string() }
+                #[cfg(not(feature = "fuzz"))]
+                {
+                    vars.get_str("!").unwrap_or_default()
+                }
+            };
             (bg_pid, i - start)
         }
         '0' => {
@@ -719,12 +778,21 @@ fn expand_dollar(chars: &[char], start: usize, vars: &crate::shell::vars::VarSto
 fn expand_special_var(name: &str, vars: &crate::shell::vars::VarStore, _script_file: &str) -> String {
     match name {
         "RANDOM" => {
-            // Return random number 0-32767
-            let r = unsafe { libc::rand() } as u32 & 0x7fff;
-            r.to_string()
+            #[cfg(feature = "fuzz")]
+            { "42".to_string() }
+            #[cfg(not(feature = "fuzz"))]
+            {
+                let r = unsafe { libc::rand() } as u32 & 0x7fff;
+                r.to_string()
+            }
         }
         "SECONDS" => {
-            vars.get_str("SECONDS").unwrap_or_else(|| "0".to_string())
+            #[cfg(feature = "fuzz")]
+            { "42".to_string() }
+            #[cfg(not(feature = "fuzz"))]
+            {
+                vars.get_str("SECONDS").unwrap_or_else(|| "0".to_string())
+            }
         }
         "LINENO" => {
             vars.get_str("LINENO").unwrap_or_else(|| "0".to_string())
@@ -1363,6 +1431,17 @@ pub fn run_command_substitution(cmd: &str, vars: &crate::shell::vars::VarStore, 
 pub fn eval_arith_expr_with_vars(expr: &str, vars: &crate::shell::vars::VarStore) -> Result<i64, String> {
     // Expand $VAR references in the expression, then evaluate
     // Also set up thread-local var context for bare variable names
+    let depth_exceeded = EXPAND_DEPTH.with(|d| {
+        let mut depth = d.borrow_mut();
+        if *depth >= MAX_EXPAND_DEPTH {
+            return true;
+        }
+        *depth += 1;
+        false
+    });
+    if depth_exceeded {
+        return Err("Expansion nesting too deep".to_string());
+    }
     let var_map = vars.all_vars();
     ARITH_VARS.with(|v| {
         *v.borrow_mut() = Some(var_map);
@@ -1371,6 +1450,9 @@ pub fn eval_arith_expr_with_vars(expr: &str, vars: &crate::shell::vars::VarStore
     let result = eval_arith_expr(&expanded);
     ARITH_VARS.with(|v| {
         *v.borrow_mut() = None;
+    });
+    EXPAND_DEPTH.with(|d| {
+        *d.borrow_mut() -= 1;
     });
     result
 }

@@ -7,416 +7,49 @@ on:
     branches: [ main ]
   workflow_dispatch:
 
-# Cancel superseded runs on the same ref to save runner minutes.
 concurrency:
   group: ci-${{ github.ref }}
   cancel-in-progress: true
 
 jobs:
-  # ------------------------------------------------------------------
-  # Job 1 — build (release + ASan/UBSan) and run the parity test suite
-  #         across compilers, C standards and architectures.
-  # ------------------------------------------------------------------
   build-and-test:
-    name: ${{ matrix.os }} · ${{ matrix.compiler }} · ${{ matrix.std }}
+    name: ${{ matrix.os }}
     runs-on: ${{ matrix.os }}
-    timeout-minutes: 10
+    timeout-minutes: 15
     strategy:
       fail-fast: false
       matrix:
-        include:
-          # --- Linux x86_64 ---
-          - { os: ubuntu-latest,    compiler: gcc,   std: c11 }
-          - { os: ubuntu-latest,    compiler: gcc,   std: c17 }
-          - { os: ubuntu-latest,    compiler: gcc,   std: c23 }
-          - { os: ubuntu-latest,    compiler: clang, std: c11 }
-          - { os: ubuntu-latest,    compiler: clang, std: c17 }
-          - { os: ubuntu-latest,    compiler: clang, std: c23 }
-          # --- Linux ARM64 ---
-          - { os: ubuntu-24.04-arm, compiler: gcc,   std: c11 }
-          - { os: ubuntu-24.04-arm, compiler: gcc,   std: c17 }
-          - { os: ubuntu-24.04-arm, compiler: clang, std: c11 }
-          - { os: ubuntu-24.04-arm, compiler: clang, std: c17 }
-          # --- macOS ARM (M-series) ---
-          - { os: macos-latest,     compiler: clang, std: c11 }
-          - { os: macos-latest,     compiler: clang, std: c17 }
-          - { os: macos-latest,     compiler: clang, std: c23 }
-
+        os: [ubuntu-latest, ubuntu-24.04-arm, macos-latest]
     steps:
       - uses: actions/checkout@v4
-
-      - name: Install dependencies (Ubuntu)
+      - uses: dtolnay/rust-toolchain@stable
+      - name: Install deps (Ubuntu)
         if: startsWith(matrix.os, 'ubuntu')
-        run: |
-          sudo apt-get update
-          sudo apt-get install -y libsqlite3-dev pkg-config
-
-      - name: Install dependencies (macOS)
+        run: sudo apt-get install -y libsqlite3-dev pkg-config
+      - name: Install deps (macOS)
         if: startsWith(matrix.os, 'macos')
-        run: brew install sqlite3 pkg-config || true
-
-      - name: Resolve build flags
-        id: flags
-        shell: bash
-        run: |
-          CC="${{ matrix.compiler }}"
-          # -std=c23 needs GCC>=14 / Clang>=15; fall back to -std=c2x otherwise.
-          if [ "${{ matrix.std }}" = "c23" ]; then
-            if $CC -std=c23 -x c /dev/null -fsyntax-only >/dev/null 2>&1; then
-              STD=c23
-            else
-              STD=c2x
-            fi
-          else
-            STD="${{ matrix.std }}"
-          fi
-          echo "std=$STD" >> "$GITHUB_OUTPUT"
-          echo "Using -std=$STD with $CC"
-
-      - name: Build release
-        shell: bash
-        env:
-          CC: ${{ matrix.compiler }}
-          STD: ${{ steps.flags.outputs.std }}
-        run: |
-          set -x
-          # sqlite flags: prefer pkg-config; on macOS sqlite is keg-only so
-          # fall back to the Homebrew prefix when pkg-config can't see it.
-          SQLITE_CFLAGS="$(pkg-config --cflags sqlite3 2>/dev/null || true)"
-          SQLITE_LIBS="$(pkg-config --libs sqlite3 2>/dev/null || echo -lsqlite3)"
-          if [ -z "$SQLITE_CFLAGS" ] && command -v brew >/dev/null 2>&1; then
-            SQLITE_CFLAGS="-I$(brew --prefix sqlite3)/include"
-            SQLITE_LIBS="-L$(brew --prefix sqlite3)/lib -lsqlite3"
-          fi
-          # -ldl only on Linux (dlopen is in libc on macOS).
-          DL="$(uname | grep -q Linux && echo -ldl || true)"
-          $CC -Wall -std=$STD -D_POSIX_C_SOURCE=200809L \
-            -Iinclude $SQLITE_CFLAGS \
-            src/*.c -o zesh \
-            $SQLITE_LIBS $DL
-
-      - name: Build debug (ASan + UBSan)
-        shell: bash
-        env:
-          CC: ${{ matrix.compiler }}
-          STD: ${{ steps.flags.outputs.std }}
-        run: |
-          set -x
-          SQLITE_CFLAGS="$(pkg-config --cflags sqlite3 2>/dev/null || true)"
-          SQLITE_LIBS="$(pkg-config --libs sqlite3 2>/dev/null || echo -lsqlite3)"
-          if [ -z "$SQLITE_CFLAGS" ] && command -v brew >/dev/null 2>&1; then
-            SQLITE_CFLAGS="-I$(brew --prefix sqlite3)/include"
-            SQLITE_LIBS="-L$(brew --prefix sqlite3)/lib -lsqlite3"
-          fi
-          DL="$(uname | grep -q Linux && echo -ldl || true)"
-          $CC -Wall -std=$STD -D_POSIX_C_SOURCE=200809L \
-            -g -fsanitize=address,undefined \
-            -Iinclude $SQLITE_CFLAGS \
-            src/*.c -o zesh_debug \
-            $SQLITE_LIBS $DL
-
-      - name: Run parity tests (release)
-        shell: bash
-        run: |
-          ./zesh test_parite.sh > out.txt 2> err.txt || true
-          echo "----- out.txt -----"; cat out.txt
-          echo "----- err.txt (head) -----"; head -40 err.txt || true
-          grep -q "0 FAIL" out.txt
-
-      - name: Run parity tests (ASan/UBSan)
-        shell: bash
-        env:
-          # Known pre-existing leaks are out of scope; we gate on memory
-          # errors and UB, not leaks.
-          ASAN_OPTIONS: detect_leaks=0:abort_on_error=0
-          UBSAN_OPTIONS: print_stacktrace=1:halt_on_error=0
-        run: |
-          ./zesh_debug test_parite.sh > asan_out.txt 2> asan_err.txt || true
-          echo "----- asan_out.txt -----"; cat asan_out.txt
-          echo "----- asan_err.txt -----"; cat asan_err.txt
-          # Tests must still pass under sanitizers...
-          grep -q "0 FAIL" asan_out.txt
-          # ...and there must be no sanitizer-reported errors.
-          if grep -Eq "AddressSanitizer|UndefinedBehaviorSanitizer|runtime error|SUMMARY: .*Sanitizer" asan_err.txt; then
-            echo "::error::Sanitizer reported an error"
-            exit 1
-          fi
-
-      - name: Upload test artifacts
-        if: always()
-        uses: actions/upload-artifact@v4
-        with:
-          name: logs-${{ matrix.os }}-${{ matrix.compiler }}-${{ matrix.std }}
-          path: |
-            out.txt
-            err.txt
-            asan_out.txt
-            asan_err.txt
-          if-no-files-found: ignore
-          retention-days: 7
-
-  # ------------------------------------------------------------------
-  # Job 2 — FreeBSD (emulated VM via cross-platform-actions).
-  # ------------------------------------------------------------------
-  freebsd:
-    name: freebsd-14.2 · clang · ${{ matrix.std }}
-    runs-on: ubuntu-latest
-    timeout-minutes: 20
-    strategy:
-      fail-fast: false
-      matrix:
-        std: [c11, c17]
-    steps:
-      - uses: actions/checkout@v4
-
-      - name: Build & test on FreeBSD
-        uses: cross-platform-actions/action@v0.27.0
-        with:
-          operating_system: freebsd
-          version: '14.2'
-          shell: bash
-          environment_variables: 'STD'
-          run: |
-            set -x
-            export PATH=/bin:/sbin:/usr/bin:/usr/sbin:/usr/local/bin:$PATH
-            sudo pkg install -y sqlite3 pkgconf
-            # FreeBSD base ships clang; no -ldl needed (dlopen is in libc).
-            SQLITE_CFLAGS="$(pkg-config --cflags sqlite3 2>/dev/null || echo -I/usr/local/include)"
-            SQLITE_LIBS="$(pkg-config --libs sqlite3 2>/dev/null || echo '-L/usr/local/lib -lsqlite3')"
-            clang -Wall -std=${STD} -D_POSIX_C_SOURCE=200809L \
-              -Iinclude $SQLITE_CFLAGS \
-              src/*.c -o zesh \
-              $SQLITE_LIBS
-            ./zesh test_parite.sh > out.txt 2> err.txt || true
-            cat out.txt
-            head -40 err.txt || true
-            grep -q "0 FAIL" out.txt
-        env:
-          STD: ${{ matrix.std }}
-
-  # ------------------------------------------------------------------
-  # Job 3 — Alpine Linux (musl libc).
-  # ------------------------------------------------------------------
-  alpine:
-    name: alpine · gcc · c17
-    runs-on: ubuntu-latest
-    timeout-minutes: 10
-    container:
-      image: alpine:latest
-    steps:
-      - uses: actions/checkout@v4
-
-      - name: Install dependencies
-        run: apk add --no-cache gcc musl-dev sqlite-dev make bash
-
+        run: brew install sqlite3 || true
       - name: Build
-        run: |
-          gcc -Wall -std=c17 -D_POSIX_C_SOURCE=200809L -D_GNU_SOURCE \
-            -Iinclude \
-            src/*.c -o zesh \
-            -lsqlite3 -ldl
+        run: make build
+      - name: Test
+        run: make test
 
-      - name: Run parity tests
-        run: |
-          ./zesh test_parite.sh > out.txt 2> err.txt || true
-          cat out.txt
-          head -40 err.txt || true
-          grep -q "0 FAIL" out.txt
-
-      - name: Upload test artifacts
-        if: always()
-        uses: actions/upload-artifact@v4
-        with:
-          name: logs-alpine-gcc-c17
-          path: |
-            out.txt
-            err.txt
-          if-no-files-found: ignore
-          retention-days: 7
-
-  # ------------------------------------------------------------------
-  # Job 4 — OpenBSD (emulated VM via cross-platform-actions).
-  # ------------------------------------------------------------------
-  openbsd:
-    name: openbsd-7.6 · clang · c17
+  clippy:
     runs-on: ubuntu-latest
-    timeout-minutes: 15
     steps:
       - uses: actions/checkout@v4
-
-      - name: Build & test on OpenBSD
-        uses: cross-platform-actions/action@v0.27.0
+      - uses: dtolnay/rust-toolchain@stable
         with:
-          operating_system: openbsd
-          version: '7.6'
-          shell: bash
-          run: |
-            set -x
-            sudo pkg_add sqlite3
-            # OpenBSD ships clang; dlopen is in libc (no -ldl needed).
-            clang -Wall -std=c17 -D_POSIX_C_SOURCE=200809L \
-              -Iinclude -I/usr/local/include \
-              src/*.c -o zesh \
-              -L/usr/local/lib -lsqlite3
-            ./zesh test_parite.sh > out.txt 2> err.txt || true
-            cat out.txt
-            head -40 err.txt || true
-            grep -q "0 FAIL" out.txt
+          components: clippy
+      - run: |
+          sudo apt-get install -y libsqlite3-dev
+          cargo clippy --manifest-path zesh-rs/Cargo.toml -- -D warnings
 
-  # ------------------------------------------------------------------
-  # Job 5 — warnings report (-Wall -Wextra -Wpedantic). Never fails;
-  #         it tracks warning debt over time via the run summary.
-  # ------------------------------------------------------------------
-  warnings-report:
-    name: warnings · ${{ matrix.compiler }}
+  fmt:
     runs-on: ubuntu-latest
-    timeout-minutes: 10
-    strategy:
-      fail-fast: false
-      matrix:
-        compiler: [gcc, clang]
     steps:
       - uses: actions/checkout@v4
-
-      - name: Install dependencies
-        run: |
-          sudo apt-get update
-          sudo apt-get install -y libsqlite3-dev pkg-config
-
-      - name: Count warnings
-        shell: bash
-        env:
-          CC: ${{ matrix.compiler }}
-        run: |
-          if $CC -std=c23 -x c /dev/null -fsyntax-only >/dev/null 2>&1; then
-            STD=c23
-          else
-            STD=c2x
-          fi
-          $CC -fsyntax-only -Wall -Wextra -Wpedantic -std=$STD \
-            -D_POSIX_C_SOURCE=200809L -Iinclude \
-            $(pkg-config --cflags sqlite3 2>/dev/null) \
-            src/*.c 2> warnings.txt || true
-          COUNT=$(grep -c "warning:" warnings.txt || true)
-          echo "### ${CC} (-std=$STD) — ${COUNT} warnings" >> "$GITHUB_STEP_SUMMARY"
-          echo '```' >> "$GITHUB_STEP_SUMMARY"
-          # Show the unique warning kinds for quick scanning.
-          grep "warning:" warnings.txt | sed 's/.*\[-W/[-W/' | sort | uniq -c | sort -rn \
-            >> "$GITHUB_STEP_SUMMARY" || true
-          echo '```' >> "$GITHUB_STEP_SUMMARY"
-
-      - name: Upload warnings log
-        if: always()
-        uses: actions/upload-artifact@v4
+      - uses: dtolnay/rust-toolchain@stable
         with:
-          name: warnings-${{ matrix.compiler }}
-          path: warnings.txt
-          if-no-files-found: ignore
-          retention-days: 7
-
-  # ------------------------------------------------------------------
-  # Job 5c — Rust backend (USE_RUST=1) on ubuntu. Builds the zesh-rs
-  #          static library, links it into zesh and runs the parity suite
-  #          through it, then rebuilds the pure-C fallback and re-runs the
-  #          suite. Purely additive: every other job stays C-only.
-  # ------------------------------------------------------------------
-  rust-build:
-    name: ubuntu · rust-backend (USE_RUST=1)
-    runs-on: ubuntu-latest
-    timeout-minutes: 15
-    steps:
-      - uses: actions/checkout@v4
-
-      - name: Install dependencies
-        run: |
-          sudo apt-get update
-          sudo apt-get install -y libsqlite3-dev pkg-config
-
-      - name: Install Rust toolchain
-        uses: dtolnay/rust-toolchain@stable
-
-      - name: Build Rust static library
-        run: cargo build --release --manifest-path zesh-rs/Cargo.toml
-
-      - name: Build zesh (USE_RUST=1) and run parity tests
-        shell: bash
-        run: |
-          set -x
-          SQLITE_CFLAGS="$(pkg-config --cflags sqlite3 2>/dev/null || true)"
-          SQLITE_LIBS="$(pkg-config --libs sqlite3 2>/dev/null || echo -lsqlite3)"
-          cc -Wall -std=c17 -D_POSIX_C_SOURCE=200809L \
-            -DUSE_RUST_PARSER -DUSE_RUST_EXPAND \
-            -Iinclude $SQLITE_CFLAGS \
-            src/*.c zesh-rs/target/release/libzesh_rs.a \
-            -o zesh_rust \
-            $SQLITE_LIBS -ldl -lpthread -lm
-          ./zesh_rust test_parite.sh > out_rust.txt 2>&1 || true
-          echo "----- out_rust.txt -----"; cat out_rust.txt
-          grep -q "0 FAIL" out_rust.txt
-
-      - name: Build zesh (C fallback, USE_RUST=0) and re-run parity
-        shell: bash
-        run: |
-          set -x
-          SQLITE_CFLAGS="$(pkg-config --cflags sqlite3 2>/dev/null || true)"
-          SQLITE_LIBS="$(pkg-config --libs sqlite3 2>/dev/null || echo -lsqlite3)"
-          cc -Wall -std=c17 -D_POSIX_C_SOURCE=200809L \
-            -Iinclude $SQLITE_CFLAGS \
-            src/*.c -o zesh_c \
-            $SQLITE_LIBS -ldl
-          ./zesh_c test_parite.sh > out_c.txt 2>&1 || true
-          echo "----- out_c.txt -----"; cat out_c.txt
-          grep -q "0 FAIL" out_c.txt
-
-      - name: Upload logs
-        if: always()
-        uses: actions/upload-artifact@v4
-        with:
-          name: logs-rust-build
-          path: |
-            out_rust.txt
-            out_c.txt
-          if-no-files-found: ignore
-          retention-days: 7
-
-  # ------------------------------------------------------------------
-  # Job 6 — overall pass/fail summary.
-  # ------------------------------------------------------------------
-  summary:
-    name: CI summary
-    runs-on: ubuntu-latest
-    needs: [build-and-test, freebsd, alpine, openbsd, rust-build]
-    if: always()
-    steps:
-      - name: Report
-        shell: bash
-        run: |
-          echo "build-and-test: ${{ needs.build-and-test.result }}"
-          echo "freebsd:        ${{ needs.freebsd.result }}"
-          echo "alpine:         ${{ needs.alpine.result }}"
-          echo "openbsd:        ${{ needs.openbsd.result }}"
-          echo "rust-build:     ${{ needs.rust-build.result }}"
-          {
-            echo "## CI summary"
-            echo "| Job | Result |"
-            echo "|-----|--------|"
-            echo "| build-and-test | ${{ needs.build-and-test.result }} |"
-            echo "| freebsd | ${{ needs.freebsd.result }} |"
-            echo "| alpine | ${{ needs.alpine.result }} |"
-            echo "| openbsd | ${{ needs.openbsd.result }} |"
-            echo "| rust-build | ${{ needs.rust-build.result }} |"
-          } >> "$GITHUB_STEP_SUMMARY"
-          # Gate on the primary matrix and Alpine; BSD jobs are emulated
-          # and may be flaky — they appear in the table but don't block.
-          if [ "${{ needs.build-and-test.result }}" != "success" ]; then
-            echo "::error::build-and-test failed"
-            exit 1
-          fi
-          if [ "${{ needs.alpine.result }}" != "success" ]; then
-            echo "::error::alpine failed"
-            exit 1
-          fi
-          if [ "${{ needs.rust-build.result }}" != "success" ]; then
-            echo "::error::rust-build failed"
-            exit 1
-          fi
+          components: rustfmt
+      - run: cargo fmt --manifest-path zesh-rs/Cargo.toml --check
