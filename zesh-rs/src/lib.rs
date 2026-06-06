@@ -32,5 +32,6 @@ pub mod alias;
 pub mod security;
 pub mod config;
 pub mod rc;
+pub mod shell;
 
 pub use ffi::*;

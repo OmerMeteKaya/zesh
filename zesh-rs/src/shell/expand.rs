@@ -761,15 +761,19 @@ fn expand_brace(chars: &[char], vars: &crate::shell::vars::VarStore, script_file
             '"' => {
                 i += 1;
                 while i < chars.len() && chars[i] != '"' {
-                    if chars[i] == '\\' { i += 1; }
+                    // Avoid skipping past end when backslash is the last char
+                    if chars[i] == '\\' && i + 1 < chars.len() { i += 1; }
                     i += 1;
                 }
             }
             _ => {}
         }
+        // Guard: inner loops for ' and " can leave i at or past end
+        if i >= chars.len() { break; }
         i += 1;
     }
 
+    let i = i.min(chars.len()); // defensive cap in case of unterminated quote/brace
     let content: String = chars[..i].iter().collect();
     let consumed = i + 1; // include the }
 
@@ -1112,7 +1116,16 @@ fn replace_pattern(val: &str, pat: &str, repl: &str, global: bool) -> String {
                 let slice: String = chars[i..end].iter().collect();
                 if glob_match(pat, &slice) {
                     result.push_str(repl);
-                    i = end;
+                    if end == i {
+                        // Empty-pattern match: consume the next char too so we
+                        // don't loop forever (mirrors bash "${v///R}" behaviour).
+                        if i < chars.len() {
+                            result.push(chars[i]);
+                        }
+                        i += 1;
+                    } else {
+                        i = end;
+                    }
                     matched = true;
                     break;
                 }

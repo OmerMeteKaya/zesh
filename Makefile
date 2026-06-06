@@ -9,7 +9,7 @@ LDFLAGS = -lsqlite3 -lcurl -lncurses -ldl
 #     make USE_RUST_LEXER=1     # only the lexer in Rust, everything else C
 #     make USE_RUST=1           # every ported module in Rust
 # Each per-module switch defaults to USE_RUST, so USE_RUST=1 turns them all on.
-USE_RUST ?= 0
+USE_RUST ?= 1
 RUST_LIB  = zesh-rs/target/release/libzesh_rs.a
 
 USE_RUST_PARSER    ?= $(USE_RUST)

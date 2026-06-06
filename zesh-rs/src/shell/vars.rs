@@ -288,3 +288,15 @@ pub fn vars() -> std::sync::MutexGuard<'static, VarStore> {
 pub fn vars_init() {
     let _ = VARS.get_or_init(|| Mutex::new(VarStore::new()));
 }
+
+// Reset global state between fuzz iterations to prevent state leakage.
+// Only meaningful in fuzz builds; the fuzz feature gates non-deterministic
+// expansions ($$, $RANDOM, $SECONDS) to fixed values.
+pub fn reset_fuzz_state() {
+    #[cfg(feature = "fuzz")]
+    {
+        if let Ok(mut v) = VARS.get_or_init(|| Mutex::new(VarStore::new())).lock() {
+            *v = VarStore::new();
+        }
+    }
+}

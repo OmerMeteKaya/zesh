@@ -27,10 +27,12 @@ impl Lexer {
 
     fn advance(&mut self) -> Option<char> {
         let c = self.input.get(self.pos).copied();
-        if c == Some('\n') {
-            self.line += 1;
+        if c.is_some() {
+            if c == Some('\n') {
+                self.line += 1;
+            }
+            self.pos += 1;
         }
-        self.pos += 1;
         c
     }
 
@@ -792,6 +794,9 @@ impl Lexer {
     }
 
     fn collect_heredoc(&mut self, delim_raw: &str, strip_tabs: bool) -> String {
+        if self.pos > self.input.len() {
+            return String::new();
+        }
         // Strip quotes from delimiter for comparison
         let bare_delim: String = delim_raw.chars()
             .filter(|&c| c != '\'' && c != '"' && c != '\\')
@@ -804,7 +809,7 @@ impl Lexer {
 
         let mut chars_consumed = 0;
         for line in remaining_str.split('\n') {
-            chars_consumed += line.len() + 1; // +1 for \n
+            chars_consumed += line.chars().count() + 1; // +1 for \n (char count, not bytes)
 
             let check = if strip_tabs {
                 line.trim_start_matches('\t')
