@@ -9,7 +9,7 @@ fn main() {
     let args: Vec<String> = std::env::args().collect();
 
     // Initialize subsystems
-    shell::config::config_load();
+    let _config = shell::config::config_load();
     shell::signals::setup_signals();
     shell::history::history_init();
 
