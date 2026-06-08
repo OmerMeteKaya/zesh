@@ -1,0 +1,1 @@
+fgr i in 1 2[*] t 3; do echo $i; done

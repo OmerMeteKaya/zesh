@@ -1,0 +1,1 @@
+while read line;f cmd2; t{{ do eche $line; done

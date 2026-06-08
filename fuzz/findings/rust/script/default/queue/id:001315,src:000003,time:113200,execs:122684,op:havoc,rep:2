@@ -1,0 +1,1 @@
+for i in 1 2 3 i in 1 2 3; do echo $i; d( do echo $i; done

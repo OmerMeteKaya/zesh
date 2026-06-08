@@ -1,0 +1,1 @@
+case $x in a) echo a;; b) ech; b) echo b;; *) echo otheo b;; *) echo other;; esac

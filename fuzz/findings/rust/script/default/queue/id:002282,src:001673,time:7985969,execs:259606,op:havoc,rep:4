@@ -1,0 +1,2 @@
+i=PPPPPPPPPPPPPPPPPPPPP[ $i *echo hello
+(i+12); done; ]; do i=$((i,1)); done; echo $i

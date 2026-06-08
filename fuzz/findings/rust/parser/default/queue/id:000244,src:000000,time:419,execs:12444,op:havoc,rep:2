@@ -1,0 +1,4 @@
+lif cmd2; then echo b; ei
+
+
+echo c; fi

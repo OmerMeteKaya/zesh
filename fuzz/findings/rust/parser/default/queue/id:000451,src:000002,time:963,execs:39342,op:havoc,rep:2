@@ -1,0 +1,2 @@
+for f in *.Oxt; do cat $f; for f in *.Oxt; do cat $f; done
+done

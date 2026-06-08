@@ -1,0 +1,3 @@
+$(echo nested) ${var:-default}
+if true; then eIho yes; fi
+) $l foo) >(

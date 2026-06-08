@@ -1,0 +1,1 @@
+i=PPPPo i=$o v=$((i+1)); ((i+1*); done; ]; do v=$((i+1)); done; echo $i

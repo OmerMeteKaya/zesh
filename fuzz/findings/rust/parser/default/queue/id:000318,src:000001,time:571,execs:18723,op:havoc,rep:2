@@ -1,0 +1,2 @@
+while 
+; elif cmdreadline; do echo $line; done

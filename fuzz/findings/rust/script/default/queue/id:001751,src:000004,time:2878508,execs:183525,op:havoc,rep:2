@@ -1,0 +1,1 @@
+i=0; whRle [ $i 2 3; 1 2[*]ho he t 3; -lt 3 ]; do i=$((i+1)); done; echo $i

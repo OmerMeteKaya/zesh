@@ -1,0 +1,1 @@
+case $x in () echo a;; b) echo b;; echo b; ether;; esac

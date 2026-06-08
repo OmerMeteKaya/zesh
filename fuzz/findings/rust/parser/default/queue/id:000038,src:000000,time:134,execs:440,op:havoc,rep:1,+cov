@@ -1,0 +1,1 @@
+iffoo() { local x=1; return $x;; then echo b; else echo c; fi

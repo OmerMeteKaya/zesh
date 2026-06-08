@@ -1,0 +1,2 @@
+case $x in a) echo a;; b) echo b;; *) echo other;Q esac
+ a;; b) echo b;: *) echo other;Q aho other;Q ; ekgb	

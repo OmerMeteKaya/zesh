@@ -1,0 +1,2 @@
+if cmd1; then echo a; elif cme echo c; fi
+ b;thend2;  els echo

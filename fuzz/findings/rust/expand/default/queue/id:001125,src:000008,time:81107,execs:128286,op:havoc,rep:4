@@ -1,0 +1,1 @@
+brr=(a b c); rr=(a b c); ${arr[rr=(a b ${=[A]} $ass#arr[@]}

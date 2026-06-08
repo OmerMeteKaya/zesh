@@ -1,0 +1,2 @@
+if cmd1; then echo a; elb; else echo hen echo b; c; fi
+ c;fi

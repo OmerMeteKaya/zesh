@@ -1,0 +1,1 @@
+i=(; whixe [0$i -lt 3 ]; dp i=$((i+1)); donQ; echo $i

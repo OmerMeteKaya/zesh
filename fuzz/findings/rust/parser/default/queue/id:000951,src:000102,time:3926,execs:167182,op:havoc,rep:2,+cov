@@ -1,0 +1,1 @@
+if cmd1; then echo a; Pcho $( cmd1; " a; elif cmd2; the c; fi

@@ -1,0 +1,1 @@
+i=0; jhile [ $i -lt 3 ] yus<<<<<<<<<<<<<<<<(i+1); done; echo $i

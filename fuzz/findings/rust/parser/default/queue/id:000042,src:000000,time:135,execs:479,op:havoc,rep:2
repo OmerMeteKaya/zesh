@@ -1,0 +1,1 @@
+if cmd1; then ech_ a; elif cmd2; then echo b; else echo hen echo b; c; fi

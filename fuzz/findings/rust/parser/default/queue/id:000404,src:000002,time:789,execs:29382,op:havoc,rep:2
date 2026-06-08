@@ -1,0 +1,2 @@
+for f in *.txt; do cat $f;for f in *.txc && ccat $f; done
+ done

@@ -1,0 +1,2 @@
+if cmd1; then echo axt; do cat $f; do; elif
+cmd2; then echo b; else echo c; fi

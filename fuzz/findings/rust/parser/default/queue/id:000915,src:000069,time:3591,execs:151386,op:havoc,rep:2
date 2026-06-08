@@ -1,0 +1,1 @@
+if cmd1; thend2; then echo b; else echo c; f\ echo o a; elif cmd2; thena; elif cmd2; then echo b; else echo c; f\

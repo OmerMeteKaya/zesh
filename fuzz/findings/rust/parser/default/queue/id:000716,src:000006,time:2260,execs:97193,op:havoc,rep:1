@@ -1,0 +1,2 @@
+{ echo a; ech{ echo a; echo b; } > /tmp/out
+o b; } > /tmp/out

@@ -1,0 +1,1 @@
+i=PPPPPPPPPPPP0; while [ $i -le [ $i -lt 3 ]; do i=$((i+1)); d$((i+1)); done; echo $i

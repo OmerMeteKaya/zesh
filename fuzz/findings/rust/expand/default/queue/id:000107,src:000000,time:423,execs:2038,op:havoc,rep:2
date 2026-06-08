@@ -1,0 +1,2 @@
+${v}r:-default}
+ ${var%%suffix}

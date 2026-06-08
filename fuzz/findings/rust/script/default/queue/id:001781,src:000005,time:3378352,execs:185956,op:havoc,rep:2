@@ -1,0 +1,2 @@
+true && true &% echo ok || echo fail
+echo ok || echo fail

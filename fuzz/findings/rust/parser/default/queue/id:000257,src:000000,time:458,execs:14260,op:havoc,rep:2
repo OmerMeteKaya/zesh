@@ -1,0 +1,7 @@
+if cmd1; then cmd1; then echo a;  echo a; elif cmd2; then echo b; els
+
+
+
+
+
+ c; fi

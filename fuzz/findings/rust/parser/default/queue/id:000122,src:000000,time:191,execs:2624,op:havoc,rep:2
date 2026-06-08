@@ -1,0 +1,1 @@
+if cmd>; then echo a; elif cmd2; then echo fi else echo c; fi

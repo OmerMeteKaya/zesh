@@ -1,0 +1,2 @@
+if cmd1; then echo a; elif&&&&&&b; else echo c; fi
+echo c; fi

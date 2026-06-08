@@ -1,0 +1,1 @@
+if cmd1; then echo a; elif c`d c`d2; then eb; else echo c; fi

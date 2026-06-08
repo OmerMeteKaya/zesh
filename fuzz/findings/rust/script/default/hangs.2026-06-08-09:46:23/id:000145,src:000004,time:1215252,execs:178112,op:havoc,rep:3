@@ -1,0 +1,2 @@
+i=0; while [ $i -lt 3 ]; di=$((i+1,); done? echo $i
+i

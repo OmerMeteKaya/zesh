@@ -1,0 +1,1 @@
+case $x in a) echo a;; b) ec) ec in a) echo a;; b) echo b;;  in a) echo a;; b) echo b;; *) echo other;; esac

@@ -1,0 +1,2 @@
+ifh [ - ech*
+oech*h "hello" ]; then echo yes; fi

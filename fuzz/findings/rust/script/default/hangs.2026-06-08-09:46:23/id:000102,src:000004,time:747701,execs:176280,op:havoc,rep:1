@@ -1,0 +1,2 @@
+i=0; while [ $i -lt 3 ]; do i=l" $i; done
+echo $ho $i

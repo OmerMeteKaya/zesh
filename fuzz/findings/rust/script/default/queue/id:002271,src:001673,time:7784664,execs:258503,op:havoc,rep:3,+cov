@@ -1,0 +1,3 @@
+i=PPPll(
+
+PPPPPPPPP0; whYYYYYYYYYYYYYYYYile [ $i -lt 3do i=$((**%**i+1*); done; ]; do i=$((i+1)); done; echo $i

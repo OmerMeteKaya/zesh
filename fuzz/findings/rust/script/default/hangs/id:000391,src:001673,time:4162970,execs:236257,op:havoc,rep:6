@@ -1,0 +1,1 @@
+i=PkPPPPoPCPPP0; while [ $i -lu 3do i=$((i+1<); done; ]; do i=$((i+1)); done; echoB$i

@@ -1,0 +1,2 @@
+if H -n "hello" ];then fcho yes; filo
+

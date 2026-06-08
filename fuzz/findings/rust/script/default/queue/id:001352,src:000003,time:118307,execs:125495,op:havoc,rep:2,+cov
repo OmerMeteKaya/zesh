@@ -1,0 +1,1 @@
+for i i in 1 2 &; do echo $i; don

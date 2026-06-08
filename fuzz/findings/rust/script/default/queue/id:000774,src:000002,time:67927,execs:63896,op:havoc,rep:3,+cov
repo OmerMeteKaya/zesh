@@ -1,0 +1,1 @@
+if@[!-n "echoeho$( then echo yes; fi

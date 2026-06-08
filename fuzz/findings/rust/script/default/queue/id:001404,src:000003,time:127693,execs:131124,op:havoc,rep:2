@@ -1,0 +1,1 @@
+for i in 1 2_echo hell____ 3; do echo $i; doo?ne

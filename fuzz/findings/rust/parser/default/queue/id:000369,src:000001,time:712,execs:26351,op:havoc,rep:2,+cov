@@ -1,0 +1,2 @@
+while read line; do echo $lineN done
+ cmd1; then e a; elif 33333333

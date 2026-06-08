@@ -1,0 +1,2 @@
+while read line; do ""e
+"""""""""""""""echo $line; done

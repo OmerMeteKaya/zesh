@@ -1,0 +1,1 @@
+case $x in a) dbrg	c=; b) echo b;; *) echo other;; esac

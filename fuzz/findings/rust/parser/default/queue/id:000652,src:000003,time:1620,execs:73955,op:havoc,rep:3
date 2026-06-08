@@ -1,0 +1,1 @@
+case $x in a)ho b;; *) echo otherb;; *) echo other;; esac echo a;;; esac echo a;; b)o b;; *) echo otherF; esac

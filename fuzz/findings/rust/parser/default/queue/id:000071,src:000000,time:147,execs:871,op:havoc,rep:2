@@ -1,0 +1,2 @@
+if cmd1; then echo a; a; elif cmd2; then echo b; e echo c; fi
+hen etho a; elif hen echo a

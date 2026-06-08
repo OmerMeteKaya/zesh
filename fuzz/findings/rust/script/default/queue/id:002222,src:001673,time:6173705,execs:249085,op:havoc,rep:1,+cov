@@ -1,0 +1,1 @@
+i=PPPPPPPPPPPP0; while [ $i -ot 3do i=$((i+1*); done; ]; do i=$((i+1)); done; echo $i

@@ -1,0 +1,1 @@
+i $iiiiile [ $iiiiiiiiiiiiiimiiiiiiiiiiiiiii -lt 3 ]; do i=$((i+1; while [ $iiiiiiiiiiiii)); done; echo $i

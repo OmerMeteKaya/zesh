@@ -1,0 +1,1 @@
+if cmd1; then echen echo b; else echo echo b; else`echo c; fi

@@ -1,0 +1,1 @@
+if [ -h "hello5 ]; then echo yes.fi

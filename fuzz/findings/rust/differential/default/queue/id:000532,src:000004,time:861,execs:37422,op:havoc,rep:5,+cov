@@ -1,0 +1,2 @@
+$(echo nested) ${var:-defa\ ci
+ult}uen"echo yes$(echo( thlt}

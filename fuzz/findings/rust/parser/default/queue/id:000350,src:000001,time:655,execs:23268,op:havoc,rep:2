@@ -1,0 +1,1 @@
+while read line; do echo  $lin_;$lin_; done

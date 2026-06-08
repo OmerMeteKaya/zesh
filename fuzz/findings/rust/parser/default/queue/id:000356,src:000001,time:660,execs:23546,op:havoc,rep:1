@@ -1,0 +1,1 @@
+while read line; dof cmd2; t{{{ echo $line; done

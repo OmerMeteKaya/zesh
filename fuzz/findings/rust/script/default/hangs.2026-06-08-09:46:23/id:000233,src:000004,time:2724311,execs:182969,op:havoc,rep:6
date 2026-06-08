@@ -1,0 +1,2 @@
+i=0; while [&&&&&loo
+ $ [ ?i -lt 3]; do i=$((I+1); doecho $i

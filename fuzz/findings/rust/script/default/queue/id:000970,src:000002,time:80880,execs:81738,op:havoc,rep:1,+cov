@@ -1,0 +1,1 @@
+if [ -e "hello" ]; then echo yes; fi

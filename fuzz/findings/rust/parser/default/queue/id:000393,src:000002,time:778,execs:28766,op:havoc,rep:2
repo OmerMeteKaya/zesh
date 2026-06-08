@@ -1,0 +1,1 @@
+for f in *.txt;#; do echo $line; d ```;nt $f; done

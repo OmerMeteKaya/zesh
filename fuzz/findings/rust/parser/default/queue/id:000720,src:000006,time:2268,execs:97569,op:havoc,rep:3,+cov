@@ -1,0 +1,1 @@
+{ echo a; ebho b; m >&/tmp/out

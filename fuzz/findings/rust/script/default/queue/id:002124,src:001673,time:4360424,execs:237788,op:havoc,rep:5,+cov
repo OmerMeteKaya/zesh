@@ -1,0 +1,1 @@
+i=PPPPPPPPPPPP0;while [ $iecho(exit  -lt 3do i=$3do i=$(7i+1*); done; ]; (i+1)); done; echo $i

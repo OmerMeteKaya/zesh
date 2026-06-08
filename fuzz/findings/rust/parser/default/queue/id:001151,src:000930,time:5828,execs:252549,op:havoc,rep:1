@@ -1,0 +1,3 @@
+if cmd1; then echo a; elif cmd2; then echo b; else echo c; f\
+ane& ! NmdL
+2;||||||ne;

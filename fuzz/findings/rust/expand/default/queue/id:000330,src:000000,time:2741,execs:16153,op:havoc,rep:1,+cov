@@ -1,0 +1,2 @@
+${var:-default
+var:${var:-dar:-$(echo }

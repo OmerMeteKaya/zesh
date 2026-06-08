@@ -1,0 +1,1 @@
+if cmd1; then e1; the<<<<<<<<<<<<<<<<<<<ho b; else echo c; fi

@@ -1,0 +1,2 @@
+ifen echo a cmd1; th; elif cmd2;then echo }}} echo c; fi
+; fi

@@ -1,0 +1,3 @@
+$(echo nested) ${var:ho ${valt}
+eeeedeho"hel{var:-default}
+dfault}

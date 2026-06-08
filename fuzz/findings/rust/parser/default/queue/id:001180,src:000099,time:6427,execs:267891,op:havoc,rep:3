@@ -1,0 +1,1 @@
+if cmd1; then echo a;&lqep 3; cmd1 &&${ ;"#""""" elmd2; then echo b; else echo c;"fi

@@ -1,0 +1,1 @@
+while read line; do echo $( cmd1; cmd2 ) | cmd3line; done

@@ -1,0 +1,1 @@
+while read  echo aline;"do echo $line; done

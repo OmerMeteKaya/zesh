@@ -1,0 +1,2 @@
+timcmd1 && ! cmd2
+md1 &&${e { sl0; echo don ; }

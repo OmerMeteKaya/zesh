@@ -1,0 +1,1 @@
+nf [ -n "hello tevo$((<<h>>>ech> ]; tevo$((<<h>>>echo yes; fi

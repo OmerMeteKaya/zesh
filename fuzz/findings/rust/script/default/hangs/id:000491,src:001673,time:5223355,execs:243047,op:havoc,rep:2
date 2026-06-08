@@ -1,0 +1,1 @@
+i=PPPPPPPPPPPP0; while [ $i -kt 3do i=$((i+1*); Yone; ]; do i=$((i+1)); done; echo $i

@@ -299,8 +299,8 @@ fn arith_parse_shift(tokens: &[ATok], pos: &mut usize) -> Result<i64, String> {
     loop {
         if *pos >= tokens.len() { break; }
         match tokens[*pos] {
-            ATok::LShift => { *pos += 1; let r = arith_parse_add(tokens, pos)?; left <<= r; }
-            ATok::RShift => { *pos += 1; let r = arith_parse_add(tokens, pos)?; left >>= r; }
+            ATok::LShift => { *pos += 1; let r = arith_parse_add(tokens, pos)?; let shift = (r as i64).clamp(0, 63) as u32; left <<= shift; }
+            ATok::RShift => { *pos += 1; let r = arith_parse_add(tokens, pos)?; let shift = (r as i64).clamp(0, 63) as u32; left >>= shift; }
             _ => break,
         }
     }
@@ -886,30 +886,40 @@ fn expand_param(content: &str, vars: &crate::shell::vars::VarStore, script_file:
         let name = &content[..colon1];
         let rest = &content[colon1+1..];
 
-        // Check for default/alternate operators
-        if rest.starts_with('-') || rest.starts_with('=') || rest.starts_with('+') || rest.starts_with('?') {
-            return expand_default_param(name, rest, vars, script_file);
-        }
-
         // Substring: :offset or :offset:length
-        let val = get_var_value(name, vars, script_file);
+        // Try to parse what comes next as a number (offset)
         let parts: Vec<&str> = rest.splitn(2, ':').collect();
         if let Ok(offset) = parts[0].trim().parse::<i64>() {
+            // It's a number, so treat as substring
+            let val = get_var_value(name, vars, script_file);
             let chars: Vec<char> = val.chars().collect();
-            let len = chars.len() as i64;
-            let start = if offset >= 0 {
-                offset.min(len) as usize
+            let slen = chars.len() as i64;
+            let start = if offset < 0 {
+                (slen + offset).max(0) as usize
             } else {
-                (len + offset).max(0) as usize
+                (offset as usize).min(chars.len())
             };
             if parts.len() > 1 {
-                if let Ok(count) = parts[1].trim().parse::<i64>() {
-                    let end = (start as i64 + count).min(len) as usize;
+                if let Ok(length) = parts[1].trim().parse::<i64>() {
+                    let end = if length < 0 {
+                        (slen + length).max(0) as usize
+                    } else {
+                        (start as i64 + length).min(slen) as usize
+                    };
                     let end = end.max(start);
-                    return chars[start..end].iter().collect();
+                    if let Some(slice) = chars.get(start..end) {
+                        return slice.iter().collect();
+                    }
+                    return String::new();
                 }
             }
-            return chars[start..].iter().collect();
+            if let Some(slice) = chars.get(start..) {
+                return slice.iter().collect();
+            }
+            return String::new();
+        } else if rest.starts_with('-') || rest.starts_with('=') || rest.starts_with('+') || rest.starts_with('?') {
+            // Not a number, check for default/alternate operators
+            return expand_default_param(name, rest, vars, script_file);
         }
     }
 
@@ -1553,6 +1563,13 @@ fn glob_expand(pattern: &str) -> Vec<String> {
 
     match glob::glob(pattern) {
         Ok(paths) => {
+            #[cfg(feature = "fuzz")]
+            let mut results: Vec<String> = paths
+                .filter_map(|p| p.ok())
+                .map(|p| p.to_string_lossy().into_owned())
+                .take(8)
+                .collect();
+            #[cfg(not(feature = "fuzz"))]
             let mut results: Vec<String> = paths
                 .filter_map(|p| p.ok())
                 .map(|p| p.to_string_lossy().into_owned())

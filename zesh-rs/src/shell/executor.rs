@@ -946,30 +946,24 @@ fn execute_subshell(body: &[CmdNode], redirs: &[FdRedir], background: bool, ctx:
 }
 
 fn execute_time(body: &[CmdNode], redirs: &[FdRedir], ctx: &mut ExecContext, vars: &mut VarStore) -> i32 {
-    use std::time::Instant;
-
     #[cfg(not(feature = "fuzz"))]
-    let start = Instant::now();
-    #[cfg(feature = "fuzz")]
-    let start = Instant::now();
-
-    // Get rusage before
+    let start = std::time::Instant::now();
     let mut rusage_before: libc::rusage = unsafe { std::mem::zeroed() };
-    // SAFETY: getrusage with valid ptr
     unsafe { libc::getrusage(libc::RUSAGE_CHILDREN, &mut rusage_before); }
-
     let status = with_redirections(redirs, ctx, vars, |ctx, vars| {
         execute_list(body, ctx, vars)
     });
-
+    #[cfg(not(feature = "fuzz"))]
     let elapsed = start.elapsed();
-
-    // Get rusage after
     let mut rusage_after: libc::rusage = unsafe { std::mem::zeroed() };
-    // SAFETY: getrusage with valid ptr
     unsafe { libc::getrusage(libc::RUSAGE_CHILDREN, &mut rusage_after); }
 
+
+
+    #[cfg(not(feature = "fuzz"))]
     let real_secs = elapsed.as_secs_f64();
+    #[cfg(feature = "fuzz")]
+    let real_secs = 0.0_f64;
     let user_secs = (rusage_after.ru_utime.tv_sec - rusage_before.ru_utime.tv_sec) as f64
         + (rusage_after.ru_utime.tv_usec - rusage_before.ru_utime.tv_usec) as f64 / 1_000_000.0;
     let sys_secs = (rusage_after.ru_stime.tv_sec - rusage_before.ru_stime.tv_sec) as f64

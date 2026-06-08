@@ -1,0 +1,4 @@
+fido cat $f; done
+ cat $f; done
+or f in *n *.txt; or f in *n *.txt; do cat $f; done
+or f in *.txt; do cat $f; done

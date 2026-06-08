@@ -1,0 +1,1 @@
+ $x in ${ echo a; echo b; } out

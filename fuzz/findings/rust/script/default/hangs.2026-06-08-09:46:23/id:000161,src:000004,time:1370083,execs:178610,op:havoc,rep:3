@@ -1,0 +1,2 @@
+i=0; while [ $i lt 3 ]"echoeho$( el'oohlelo
+ho f; do i=$((i+1)); done; echo $i

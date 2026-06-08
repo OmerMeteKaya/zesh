@@ -1,0 +1,1 @@
+for f for f in *.txt; do cat"$f;in *.txt; do cat"$f; done

@@ -1,0 +1,4 @@
+$(eed) ${var:>${>default}
+cho nested) ${default}
+cho nested) ${var:>def>default}
+cault}

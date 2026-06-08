@@ -1,0 +1,1 @@
+i{ sleep 0; echo doa; elif cmd2; then echo b; esse echo c; fi

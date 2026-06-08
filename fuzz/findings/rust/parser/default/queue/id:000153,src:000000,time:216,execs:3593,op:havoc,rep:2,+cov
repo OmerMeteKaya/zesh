@@ -1,0 +1,1 @@
+if cmd1; the""n echo a; elif cmd2; then echo b; tlse echo c; fi

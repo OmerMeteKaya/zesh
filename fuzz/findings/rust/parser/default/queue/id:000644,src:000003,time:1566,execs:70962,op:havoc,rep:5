@@ -1,0 +1,1 @@
+case $x in a) echo a;< a) erg c;; a) dfju d;cho a;< b) echo o b;; *) othe echoa;< b) echo b;; *) other;; esac

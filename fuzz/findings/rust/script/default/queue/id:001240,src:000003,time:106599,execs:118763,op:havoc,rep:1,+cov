@@ -1,0 +1,1 @@
+for i in he"lo 1 2 3; do echo $i; done

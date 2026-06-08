@@ -1,0 +1,2 @@
+$(ech$(echo nested) ${var:-default}>>>
+o nested) ${var:-default}

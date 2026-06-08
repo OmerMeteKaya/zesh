@@ -1,0 +1,1 @@
+while read li $<1; then echo a cmd a; e<4<<<<<<<<<-<<<<done

@@ -1,0 +1,1 @@
+if cmd1; thenif>>>>>> tlif cmd2; then echo b; else echo c; fi

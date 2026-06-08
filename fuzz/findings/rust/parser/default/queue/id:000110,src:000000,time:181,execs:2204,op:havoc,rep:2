@@ -1,0 +1,1 @@
+if cmd1; then echo"aif cmd2; thendecho b; else echo c; fi

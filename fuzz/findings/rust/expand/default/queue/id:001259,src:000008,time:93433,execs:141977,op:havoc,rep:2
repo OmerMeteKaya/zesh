@@ -1,0 +1,1 @@
+arr=(a b c); ${arrr=(a b c); ${arr[@]} #{#arr[[@]} ${#arr[@]}
