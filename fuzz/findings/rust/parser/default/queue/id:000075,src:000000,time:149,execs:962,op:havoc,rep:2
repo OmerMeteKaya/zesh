@@ -1,1 +1,0 @@
-if #md2; then echo b; else ecio c; fi

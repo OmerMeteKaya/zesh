@@ -1,1 +1,0 @@
-if [ -T "hello" ];[ -T "h@llo" ]; then echn  then echn yes; fi

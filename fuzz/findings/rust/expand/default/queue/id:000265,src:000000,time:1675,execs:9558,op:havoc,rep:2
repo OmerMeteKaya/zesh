@@ -1,1 +1,0 @@
-${aumvar:-de${var#prefix} ${var##prefifault}

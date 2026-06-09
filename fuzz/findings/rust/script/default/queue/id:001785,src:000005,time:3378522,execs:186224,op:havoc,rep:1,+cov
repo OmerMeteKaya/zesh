@@ -1,1 +1,0 @@
-true && echo ok |& echo ok || echo| echo fail

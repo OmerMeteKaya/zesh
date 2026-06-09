@@ -1,2 +1,0 @@
-for f in *.txt; do  cat $f; doneecho a;!!!!! e
-cat $f; doneecho a;!!!!! e

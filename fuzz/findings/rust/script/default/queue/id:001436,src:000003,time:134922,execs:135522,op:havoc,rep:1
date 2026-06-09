@@ -1,1 +1,0 @@
-for i in 1 2 3?ho hellc?hohel; do echo $i; done

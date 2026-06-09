@@ -1,2 +1,0 @@
-case $x in a) echo echo b;case $x in a) ecother;;  a;; b) echo b;case $x in a) echo a; case $x in a) echo echo b;case $x in a) ecother;;  a;; b) echo b;case $x in a) echo a; *) erho  a;; b) echo b;case $x in a) ecother;; esac
-*) erho  a;; b) echo b;case $x in a) ecother;; esac

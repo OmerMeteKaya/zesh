@@ -1,1 +1,0 @@
-i=PPPPPPPPPPPP0; whi3dn i=$((i+1*)le [ $i -lt 3do i=$(()i+1*); done; :; dolt 3do i=$(()i+1*); don i=$((i+1)); done; echo $i

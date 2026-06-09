@@ -1,1 +1,0 @@
-case $x in a) echo a;; bL echo c;; *))))))))))))))))))))))))))))))))) echo other;; esac

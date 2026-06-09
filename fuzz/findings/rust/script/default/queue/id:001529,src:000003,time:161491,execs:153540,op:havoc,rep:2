@@ -1,1 +1,0 @@
-for i in 1 2 3;[ -h "hello5 ]; then ec 2 3;[ -h "hello5 ]; then echo yes.f do echo $i; done

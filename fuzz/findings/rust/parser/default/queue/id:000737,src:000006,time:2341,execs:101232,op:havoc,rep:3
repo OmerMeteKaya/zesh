@@ -1,2 +1,0 @@
-{ { echo a; echo b; }5> /tmp/ou
-echo a; echo b; }5> /tmp/ou

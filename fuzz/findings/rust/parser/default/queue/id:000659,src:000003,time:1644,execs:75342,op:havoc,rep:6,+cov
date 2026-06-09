@@ -1,1 +1,0 @@
-case $xd2; then echo'b;   pn   @;; *) echo other;; esac

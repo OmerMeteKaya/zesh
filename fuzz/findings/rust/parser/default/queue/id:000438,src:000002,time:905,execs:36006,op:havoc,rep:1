@@ -1,5 +1,0 @@
-for f in *.txt; do c
-
-
-
-d line; do echo $lineat $f; done

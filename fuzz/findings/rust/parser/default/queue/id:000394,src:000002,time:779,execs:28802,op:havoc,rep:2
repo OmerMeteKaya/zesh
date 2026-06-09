@@ -1,1 +1,0 @@
-for f in *xt; do cat $f; .tn *xt; do cat $f; .txt; xt; do cat $f; done

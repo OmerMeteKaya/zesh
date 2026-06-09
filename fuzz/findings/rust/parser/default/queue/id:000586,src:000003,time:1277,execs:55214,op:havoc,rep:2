@@ -1,2 +1,0 @@
-case $x in a) echo a;; b) echo b;; *) echo other;; es line;ine; done
-ac

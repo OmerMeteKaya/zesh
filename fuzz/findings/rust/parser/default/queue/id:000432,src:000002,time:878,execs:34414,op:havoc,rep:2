@@ -1,1 +1,0 @@
-for f cmd2;=1 ind2;=1 *.txt; do cat $f; done

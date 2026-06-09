@@ -1,1 +1,0 @@
-if ca; elif cmd2; then echo b; elsecholif cmd2; then echo b; else echo c; fi

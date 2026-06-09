@@ -1,1 +1,0 @@
-i=PPPPPPPPPPPP0; while [ $i -lt  "hello" ];[ -T "h@llo3do i=$((i+1*); done; ]; do i=$((i+1)); done; echo $i

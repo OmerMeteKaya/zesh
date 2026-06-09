@@ -1,1 +1,0 @@
-${var#prefix} ${var##prefix}

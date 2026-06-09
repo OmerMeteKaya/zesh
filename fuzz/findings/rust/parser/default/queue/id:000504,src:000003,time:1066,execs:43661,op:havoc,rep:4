@@ -1,1 +1,0 @@
-case $x in a) echo a;G b) echo b;h; *) echo othur;; esac

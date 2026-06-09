@@ -1,1 +1,0 @@
-i=; while [ 4o hi -lt 3 ]; do i=$((i+1)/; done; echo $i

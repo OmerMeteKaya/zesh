@@ -1,1 +1,0 @@
-if [ -n Bhello" ]; then echo yes; fi

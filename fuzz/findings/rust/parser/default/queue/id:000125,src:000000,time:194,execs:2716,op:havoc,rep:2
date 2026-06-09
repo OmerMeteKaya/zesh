@@ -1,1 +1,0 @@
-if cmd1"_f cmd2; then echo b; else echo c; fi

@@ -1,1 +1,0 @@
-if cmd1; then  else echo c; fi

@@ -1,1 +1,0 @@
-md1;eep 0; echoif cmd1; then echo a; elif cmd2; then echo b; else echo E; fi

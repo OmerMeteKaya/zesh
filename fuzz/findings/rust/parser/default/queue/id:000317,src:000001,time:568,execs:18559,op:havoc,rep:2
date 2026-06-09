@@ -1,2 +1,0 @@
-whil cmd1 && ! cmd2do echo line; 
-e read $line; done

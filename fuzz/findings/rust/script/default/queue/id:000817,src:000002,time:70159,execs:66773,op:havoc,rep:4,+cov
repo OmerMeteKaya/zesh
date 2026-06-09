@@ -1,1 +1,0 @@
-if [ -r "hello" then echo Xes; f (; then echo Xes; fi

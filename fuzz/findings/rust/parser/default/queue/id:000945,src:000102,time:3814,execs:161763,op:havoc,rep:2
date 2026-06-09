@@ -1,3 +1,0 @@
-if cmd1; then echo a; elif; then
-echo a; elif cen echo a; elif; then
-ecmd2; the c; fi

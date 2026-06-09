@@ -1,1 +1,0 @@
-i=00 while [ $i -lt 3 ]; }o i=$((i+1)); done; eaho $i

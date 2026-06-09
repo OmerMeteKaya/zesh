@@ -1,4 +1,0 @@
-case $x ina) echo a;; b) echi
-
-
-; *) echo other;; esac

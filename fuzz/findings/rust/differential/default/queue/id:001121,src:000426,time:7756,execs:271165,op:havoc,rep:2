@@ -1,1 +1,0 @@
-for+i in	0	7	9:	do efor+i in	0	7	9:	do echo $i; doncho $i; done

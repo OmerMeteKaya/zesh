@@ -1,1 +1,0 @@
-for f in	!-qsq<	do cat $f; done

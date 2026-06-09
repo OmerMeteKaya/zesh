@@ -1,1 +1,0 @@
-for i in	0	7	9:do echo $i;for i in"0 done

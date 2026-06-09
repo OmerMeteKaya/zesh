@@ -1,1 +1,0 @@
-if cmd1; then echo a; elif cmdfor f in *.txt; do cat ho c; fi

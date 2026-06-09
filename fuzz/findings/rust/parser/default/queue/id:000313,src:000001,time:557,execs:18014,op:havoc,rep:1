@@ -1,1 +1,0 @@
-while read l''ine; do echo $line; done

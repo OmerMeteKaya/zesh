@@ -1,2 +1,0 @@
-if [ -n "hello" ]; then echo$((<<l<lo
-ho yes; fi

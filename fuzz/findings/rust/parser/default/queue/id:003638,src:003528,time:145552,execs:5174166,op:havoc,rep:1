@@ -1,1 +1,0 @@
-for f in	!-P-Psq<	do cat $f; for f in	!-Pssq<	do cat $f; for f in	!-Psq<	do cat $f; dodone

@@ -1,1 +1,0 @@
-if cmd1; the` ecmd2; then echo b; else echo c; fi

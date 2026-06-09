@@ -1,1 +1,0 @@
-if [ - -o "hello" ]; then echo y; fi

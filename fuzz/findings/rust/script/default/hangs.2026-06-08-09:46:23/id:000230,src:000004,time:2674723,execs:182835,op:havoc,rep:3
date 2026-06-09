@@ -1,1 +1,0 @@
-iA0; while [ $i -lt 3 ]; do i=$((i+1))cho hello&; done; echo $i

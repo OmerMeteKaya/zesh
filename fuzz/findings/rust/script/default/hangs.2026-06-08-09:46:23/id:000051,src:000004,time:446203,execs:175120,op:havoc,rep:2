@@ -1,3 +1,0 @@
-i=0; while [ $i -lt 3 n; do i=$((i+1))cho heo hello
-
-llo; done; echo $i

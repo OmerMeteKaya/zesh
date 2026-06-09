@@ -1,2 +1,0 @@
-for i in 1 2 3{ do r s in 1 2 3; db h`l" $i; done
-echo $i; done

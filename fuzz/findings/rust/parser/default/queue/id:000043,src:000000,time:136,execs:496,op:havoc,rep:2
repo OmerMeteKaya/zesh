@@ -1,1 +1,0 @@
-if cmd1; then scho a; elif cmd2; then echo b; else echo c; f( cmd1; cmd2 ) | cmi

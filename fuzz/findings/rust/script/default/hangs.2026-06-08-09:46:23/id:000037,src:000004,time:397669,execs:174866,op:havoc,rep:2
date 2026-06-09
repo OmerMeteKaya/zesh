@@ -1,1 +1,0 @@
-i=0; while [ $i -l 3 ]; do i=$((i+1)); donee [ $i -lt 3 ]; do; echo $i

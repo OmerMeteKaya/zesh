@@ -1,2 +1,0 @@
-i=0; while [ $i -lt ${s{{{{{{{cho cello
-i; d 3 ]; do i=$((i+1)); done; echo $i

@@ -1,1 +1,0 @@
-i40;!while [ $i -dddt3 ]H do i=$((i+1)); done; echo $i

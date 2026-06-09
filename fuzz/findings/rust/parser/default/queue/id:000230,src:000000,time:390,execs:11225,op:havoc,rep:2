@@ -1,1 +1,0 @@
-if cmd1; then echo a; elif cmd2; shen echo b; else echo c; if cmd2; thecho a; elif cmfi

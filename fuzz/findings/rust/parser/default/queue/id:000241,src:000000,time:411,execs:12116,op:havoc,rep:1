@@ -1,1 +1,0 @@
-if$$$$$$en echo  echo a; elcmd2; then echo b; else echo c; fi

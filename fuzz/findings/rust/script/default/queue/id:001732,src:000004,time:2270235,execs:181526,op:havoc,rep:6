@@ -1,1 +1,0 @@
-i=0; do i=$((u+1)); done; ech while [ $i -lo 3 ]St3 ]; do i=$(=$((u+1)); done; ( do i=$((i+1)); done; echt $i

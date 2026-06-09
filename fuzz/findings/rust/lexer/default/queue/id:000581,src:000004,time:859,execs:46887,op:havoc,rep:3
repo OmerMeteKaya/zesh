@@ -1,3 +1,0 @@
-$(echo nested\\\\\\nested\\\\\\\\\f\fi
-f ) ${v
-f ) ${var:-default}

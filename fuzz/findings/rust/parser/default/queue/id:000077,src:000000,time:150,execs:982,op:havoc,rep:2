@@ -1,1 +1,0 @@
-if cmd1; then echo a; elif cmd2; tffoo() { local x=1; returhen ecif cmd2; then echo b; elsho b; else echo c; fi

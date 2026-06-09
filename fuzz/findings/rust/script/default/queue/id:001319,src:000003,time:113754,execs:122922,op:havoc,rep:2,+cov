@@ -1,1 +1,0 @@
-gor i in 1 2 3>hell>hel; do echo $i; done

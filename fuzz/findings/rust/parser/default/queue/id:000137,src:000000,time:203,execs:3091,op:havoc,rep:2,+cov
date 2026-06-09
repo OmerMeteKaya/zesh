@@ -1,1 +1,0 @@
-if cmd1 a; elif cmd2; then echo'b;  echo c; fi

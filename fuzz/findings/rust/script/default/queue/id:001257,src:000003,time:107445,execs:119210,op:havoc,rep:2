@@ -1,1 +1,0 @@
-for i in 1 2 3;r i in 1 2 3; do 3cho $i; don do 3cho $i; done

@@ -1,2 +1,0 @@
-if [ -n "hello" ]; then echo  -n "hello" ]; then echhm hello
-yes; fi

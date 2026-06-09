@@ -1,3 +1,0 @@
-$(echocho nested) ${${valt}
- nest{-default}
- nest{var:-default}

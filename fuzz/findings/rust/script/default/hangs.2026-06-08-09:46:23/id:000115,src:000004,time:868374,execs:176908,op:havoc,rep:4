@@ -1,1 +1,0 @@
-i=0; while [ $i -l; do i=echodo i=echoell$((i+1)){{{{{{{ ell$((i+1)); done; echo $i

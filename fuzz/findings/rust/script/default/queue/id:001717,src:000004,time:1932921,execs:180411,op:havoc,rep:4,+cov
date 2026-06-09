@@ -1,1 +1,0 @@
-i=0; whicho $ih=$<(i+n]; do i=$((i+1))+ done; echo $i

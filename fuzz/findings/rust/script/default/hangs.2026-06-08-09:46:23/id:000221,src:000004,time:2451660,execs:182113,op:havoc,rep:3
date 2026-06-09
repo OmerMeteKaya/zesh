@@ -1,1 +1,0 @@
-i=0; while [ $i7-lt 3 F; do i=$((i*1)); done; echo $i

@@ -1,1 +1,0 @@
-i=0; while [ $i =$((3 ^; do ilt i+1)); done; echo $i

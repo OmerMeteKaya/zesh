@@ -1,1 +1,0 @@
-i=PPPPQPPPPPPP0; whilor i in 1 2 3; *lo cho $i=$((i+1*); done; ]; do i=i+1*); done; ]; do i=$((i+1)); done; echo $i

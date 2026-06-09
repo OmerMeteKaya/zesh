@@ -1,1 +1,0 @@
-for f cmd2;=1 ind2;=1 *.t8 f cmd2;=1 ind2;=1 *.t8t; do t; do cat $f; done

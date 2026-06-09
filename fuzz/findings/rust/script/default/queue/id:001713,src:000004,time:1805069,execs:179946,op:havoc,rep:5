@@ -1,5 +1,0 @@
-i=(; ec
-o
- [ $i c
-o
- [ $i -lt 3 ]; do t=$cho $i

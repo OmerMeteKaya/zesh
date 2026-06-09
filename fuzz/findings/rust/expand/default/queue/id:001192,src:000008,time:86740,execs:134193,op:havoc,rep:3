@@ -1,1 +1,0 @@
-arr=(a b d); ${arr[@]} $v#arr[@]}

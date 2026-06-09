@@ -1,3 +1,0 @@
-for i in	
-79:	do echo<<E<& i in	0
-79:	do echo $i;'don $i; done

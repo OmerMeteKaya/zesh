@@ -1,1 +1,0 @@
-i=0; while [ $i -lt 3 ]; do for i in 3VUUUUUU; do for i in 1do i=$((i+1)); done; echo $i

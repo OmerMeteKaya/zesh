@@ -1,1 +1,0 @@
-i=0; while [ $i - -llt 3 -llt 3 ];<do i=$( done; echo $i

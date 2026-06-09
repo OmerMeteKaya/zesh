@@ -1,1 +1,0 @@
-i= i=$((i+1)); done; echo o i=$((i+1)); done; echo $i

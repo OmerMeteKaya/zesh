@@ -1,1 +1,0 @@
-while read line; while read line; dodo echo $line; done

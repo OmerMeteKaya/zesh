@@ -1,3 +1,0 @@
-if cmd1; then echo a; ho b;  fi
-elseelif cmd2; then echo b;  fi
-else echo c; fi

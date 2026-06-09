@@ -1,1 +1,0 @@
-if cmd1;if cm then echo a; elif cmd2; then echo b; lse echo c; fi

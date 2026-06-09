@@ -1,1 +1,0 @@
-if@cmd1; then echo a; elif cmd2;AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAen echo b; else echo c; fi

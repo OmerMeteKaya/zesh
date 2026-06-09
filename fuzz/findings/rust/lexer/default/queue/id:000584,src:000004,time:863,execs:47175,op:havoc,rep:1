@@ -1,2 +1,0 @@
-$(echo nested) ${var:-defo"vor$(Jcdod
-dault}

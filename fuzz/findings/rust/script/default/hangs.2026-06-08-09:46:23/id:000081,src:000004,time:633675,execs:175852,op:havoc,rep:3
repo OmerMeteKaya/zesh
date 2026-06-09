@@ -1,1 +1,0 @@
-m=0; while [ $i -lt 3]; do i=$F(i+1)); done; echo $i

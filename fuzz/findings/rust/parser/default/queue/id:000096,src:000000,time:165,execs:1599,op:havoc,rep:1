@@ -1,1 +1,0 @@
-if cmd1; thmd1; then echo a; elif cmen echo a; elif cmd2; then echo b; else  c; fi

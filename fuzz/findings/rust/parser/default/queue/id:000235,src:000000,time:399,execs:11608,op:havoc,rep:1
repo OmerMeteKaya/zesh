@@ -1,2 +1,0 @@
-if cmd1; then echo a; elif cmd2; then echoecho b" elseho c; fi
- b; else echo c; fi

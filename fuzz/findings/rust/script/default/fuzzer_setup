@@ -1,7 +1,0 @@
-# environment variables:
-AFL_AUTORESUME=1
-AFL_CUSTOM_INFO_PROGRAM=zesh-rs/target/release/fuzz_script
-AFL_CUSTOM_INFO_PROGRAM_ARGV=@@
-AFL_CUSTOM_INFO_OUT=fuzz/findings/rust/script/default
-# command line:
-'/home/mete/.local/share/afl.rs/rustc-1.96.0-ac68faa/afl.rs-0.18.2/afl/bin/afl-fuzz' '-c0' '-i' 'fuzz/corpus/script' '-o' 'fuzz/findings/rust/script' '-t' '3000' '-m' '512' '--' 'zesh-rs/target/release/fuzz_script' '@@'

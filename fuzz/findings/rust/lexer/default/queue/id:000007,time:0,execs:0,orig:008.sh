@@ -1,1 +1,0 @@
-cat <(echo foo) >(cat)

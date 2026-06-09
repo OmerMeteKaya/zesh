@@ -1,1 +1,0 @@
-i=PPPPPPPPPPPP0; while [ $i#-lt  && echo ok ~| echo fail3do i=$((i+1*); done; ]; do i=$((i+1)); done; echo $i

@@ -1,1 +1,0 @@
-i=PPPPPPPPPPPP; while [ $i -l~ 3do 3 ]; do i=$((i+1)); ddo i=$((i+1)); done; echo $i

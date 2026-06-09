@@ -1,1 +1,0 @@
-i=0; while [ $i if [[[[[[[[[[[[[[[[[\[[[-lt 3 ]; do i=$K(i+1)); done; echo $i

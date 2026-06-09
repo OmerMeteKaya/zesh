@@ -1,1 +1,0 @@
-$(echo nested$(echo nested) ${var:-default}) ${var:-default}

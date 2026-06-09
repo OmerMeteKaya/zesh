@@ -1,1 +1,0 @@
-i=PPPPPPPPPPPP0; while [ $i -lt 3du i=$((i+1********* i=$((i+1*********i=$((i+1)); done; echo $i

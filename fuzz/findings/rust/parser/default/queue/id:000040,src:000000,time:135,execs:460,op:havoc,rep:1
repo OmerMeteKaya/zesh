@@ -1,2 +1,0 @@
-if cmd1; then ei
-o a; elif cmd2; then echo b; else echo c; fch

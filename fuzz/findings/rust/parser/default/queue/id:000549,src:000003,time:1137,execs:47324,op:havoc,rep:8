@@ -1,7 +1,0 @@
-case<$x in a) echo a;; b1 echo b
-e $x ini
-
-
-
-
-sp a;;

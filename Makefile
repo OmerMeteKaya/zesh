@@ -1,7 +1,7 @@
 CARGO        = cargo
-RELEASE_BIN  = zesh-rs/target/release/zesh_rs
-DEBUG_BIN    = zesh-rs/target/debug/zesh_rs
-FUZZ_DIR     = zesh-rs/fuzz
+RELEASE_BIN  = zesh/target/release/zesh_rs
+DEBUG_BIN    = zesh/target/debug/zesh_rs
+FUZZ_DIR     = zesh/fuzz
 CORPUS_DIR   = fuzz/corpus
 FINDINGS_DIR = fuzz/findings/rust
 
@@ -13,10 +13,10 @@ FINDINGS_DIR = fuzz/findings/rust
 all: build
 
 build:
-	$(CARGO) build --release --manifest-path zesh-rs/Cargo.toml
+	$(CARGO) build --release --manifest-path zesh/Cargo.toml
 
 debug:
-	$(CARGO) build --manifest-path zesh-rs/Cargo.toml
+	$(CARGO) build --manifest-path zesh/Cargo.toml
 
 test: build
 	$(RELEASE_BIN) test_parite.sh
@@ -33,7 +33,7 @@ run: build
 	$(RELEASE_BIN)
 
 clean:
-	$(CARGO) clean --manifest-path zesh-rs/Cargo.toml
+	$(CARGO) clean --manifest-path zesh/Cargo.toml
 	$(CARGO) clean --manifest-path $(FUZZ_DIR)/Cargo.toml || true
 
 # --- Fuzzing ---

@@ -1,1 +1,0 @@
-cIse $x in a) echo a;; b) echo b;; *) echo other;;cccme read line; esac

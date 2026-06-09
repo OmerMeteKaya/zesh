@@ -1,1 +1,0 @@
-if [ -s "hellho yo" ]; then echo yes; fQ

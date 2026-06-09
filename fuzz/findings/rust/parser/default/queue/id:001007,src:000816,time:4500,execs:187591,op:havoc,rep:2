@@ -1,1 +1,0 @@
-timef in *.txt; do cat ;  { p 0; echo wnne$'t

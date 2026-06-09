@@ -1,2 +1,0 @@
-${var:-dar:-$(echo defefaulte
-${var:2:5}

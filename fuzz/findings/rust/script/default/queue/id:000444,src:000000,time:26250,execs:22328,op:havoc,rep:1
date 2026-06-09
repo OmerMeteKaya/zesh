@@ -1,1 +1,0 @@
-echo h1 2 3; do echo $i; ello

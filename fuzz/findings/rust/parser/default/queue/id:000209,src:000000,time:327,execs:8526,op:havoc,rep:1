@@ -1,1 +1,0 @@
-if cmd1; then echo a; elifffoo() { local x=1; returhen ec cmd2; then echo b; else echo c; fi

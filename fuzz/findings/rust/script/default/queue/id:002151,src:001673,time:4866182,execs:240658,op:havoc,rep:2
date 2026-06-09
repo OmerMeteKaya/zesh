@@ -1,1 +1,0 @@
-i=PPPPPPPPPPPP0; while [ $i **%(**echo hei+1*); done; ]; do i=$((i+1)); done; echo $i

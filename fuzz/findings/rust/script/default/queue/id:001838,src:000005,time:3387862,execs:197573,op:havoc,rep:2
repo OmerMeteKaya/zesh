@@ -1,2 +1,0 @@
-t{ue && echue && echo ok || echo fail
-o ok || echo fail

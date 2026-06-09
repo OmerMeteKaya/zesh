@@ -1,1 +1,0 @@
-case !j in a) dbro a;; b) echo b;; *) felt other;; esac

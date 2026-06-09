@@ -1,0 +1,14 @@
+.claude
+.idea
+afl_out_lexer/default
+.github
+.archive
+fuzz
+cmakelists.txt
+core.*
+zesh/afl_out_lexer
+zesh/fuzz
+zesh/target/
+zesh/core.*
+test_*
+.gitignore

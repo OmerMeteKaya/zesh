@@ -1,1 +1,0 @@
-i=0; while [ $i5-lt  ]; do i=$((i+1)); done\ Echo $i

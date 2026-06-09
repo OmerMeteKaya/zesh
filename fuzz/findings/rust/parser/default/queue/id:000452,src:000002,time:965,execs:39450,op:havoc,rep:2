@@ -1,1 +1,0 @@
-for f in *while read line; do echo $<<4<<<.txt; ho cat $f; done

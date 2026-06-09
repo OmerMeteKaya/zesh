@@ -1,1 +1,0 @@
-if cmd1;th a)  &&${V in a cmd2; then echo b; else echo c;"fi

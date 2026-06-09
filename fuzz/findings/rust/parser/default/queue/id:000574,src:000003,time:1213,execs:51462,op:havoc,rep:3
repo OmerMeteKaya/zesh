@@ -1,1 +1,0 @@
-case $x in a)echo acho a;; b) echo b<; *) echo oth;; b) echo b<; *) echo other;; esac

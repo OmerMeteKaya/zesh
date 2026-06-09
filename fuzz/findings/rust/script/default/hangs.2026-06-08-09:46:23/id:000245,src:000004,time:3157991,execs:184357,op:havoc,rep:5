@@ -1,1 +1,0 @@
-i50; while [ $i -lt 3 ]; do i>$&(i+1)); ddn; echo $i

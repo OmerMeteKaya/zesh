@@ -1,1 +1,0 @@
-if cmd1; then ej	fcho a;if cmd2; then echo b; else echo c; fi

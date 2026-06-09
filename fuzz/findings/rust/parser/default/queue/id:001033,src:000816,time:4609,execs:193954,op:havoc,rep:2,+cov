@@ -1,3 +1,0 @@
-timef in *.txt; do cat t
-o cat t
- { p 0;  { p 0; echo dnne; $'

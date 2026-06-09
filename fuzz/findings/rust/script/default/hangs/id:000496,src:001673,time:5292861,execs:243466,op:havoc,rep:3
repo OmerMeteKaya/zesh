@@ -1,1 +1,0 @@
-i=PPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPP0;                               while [ $o i=$((i+1)); done; echo $i

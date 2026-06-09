@@ -1,1 +1,0 @@
-case $h in a( echo a;; b) echo b;; *) n a( echo a;; b) echo b;; *) ececho other;; esac

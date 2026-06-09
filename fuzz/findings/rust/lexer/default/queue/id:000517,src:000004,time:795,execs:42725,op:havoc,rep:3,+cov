@@ -1,2 +1,0 @@
-$(echo nested) ${ult$(echo${ult$d) ${var:-default}
-}

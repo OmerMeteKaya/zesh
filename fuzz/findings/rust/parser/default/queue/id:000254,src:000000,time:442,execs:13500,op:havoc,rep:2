@@ -1,2 +1,0 @@
-if cmd1; then echo a; elif cread lif cmd2; then echo' done
-fi

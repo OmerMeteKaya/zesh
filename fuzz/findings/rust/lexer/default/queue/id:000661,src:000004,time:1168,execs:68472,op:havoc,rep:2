@@ -1,2 +1,0 @@
-$(echo(echo nested) $((( 2 ))
-default}default}
